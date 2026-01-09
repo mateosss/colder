@@ -17,7 +17,7 @@ from mathutils import Vector, Matrix
 # Script options (edit me)
 # -------------------------
 EXPORT_PATH = "colmap_export"
-RENDER_OBJECTS = ["Suzanne"]
+TARGET_OBJECTS = ["Points"]
 
 # If True, only keep points that are observed in >= 2 images (often required for meaningful SfM)
 FILTER_MIN_TRACK_LEN_2 = False
@@ -29,7 +29,7 @@ IMAGE_NAME_FMT = "cam_{:04d}.png"
 # -------------------------
 # Projection models
 # -------------------------
-def project_pinhole(x, y, z, fx, fy, cx, cy, width, height):
+def project_pinhole(x, y, z, width, height, fx, fy, cx, cy):
     # Camera coords: x right, y down, z forward (COLMAP convention)
     if z <= 0.0:
         return (False, 0.0, 0.0)
@@ -39,9 +39,25 @@ def project_pinhole(x, y, z, fx, fy, cx, cy, width, height):
     return (valid, u, v)
 
 
+def project_simple_radial(x, y, z, width, height, f, cx, cy, k1):
+    # Camera coords: x right, y down, z forward (COLMAP convention)
+    if z <= 0.0:
+        return (False, 0.0, 0.0)
+    x_n = x / z
+    y_n = y / z
+    r2 = x_n * x_n + y_n * y_n
+    radial_distortion = 1.0 + k1 * r2
+    x_d = x_n * radial_distortion
+    y_d = y_n * radial_distortion
+    u = f * x_d + cx
+    v = f * y_d + cy
+    valid = (0.0 <= u < float(width)) and (0.0 <= v < float(height))
+    return (valid, u, v)
+
+
 CAMERA_PROJECT = {
     "PINHOLE": project_pinhole,
-    # "SIMPLE_RADIAL": project_simple_radial,
+    "SIMPLE_RADIAL": project_simple_radial,
 }
 
 
@@ -50,21 +66,26 @@ CAMERA_PROJECT = {
 # -------------------------
 class CameraRec:
     def __init__(self, camera_id, obj):
-        self.camera_id = camera_id          # also used as RIG_ID and FRAME_ID
-        self.obj = obj                      # bpy.types.Object (type CAMERA)
-        self.model = str(obj.get("model", "PINHOLE"))
-        self.width = int(obj.get("width", 640))
-        self.height = int(obj.get("height", 480))
-        self.params = list(obj.get("params", [300.0, 300.0, 320.0, 240.0]))
+        self.camera_id = camera_id  # also used as RIG_ID and FRAME_ID
+        self.obj = obj  # bpy.types.Object (type CAMERA)
+        self.model = obj.data["model"]
+        self.width = obj.data["width"]
+        self.height = obj.data["height"]
+        self.params = obj.data["params"]
+
+    def project(self, x, y, z):
+        assert self.model in CAMERA_PROJECT, f"Unsupported camera model '{self.model}'"
+        proj_func = CAMERA_PROJECT[self.model]
+        return proj_func(x, y, z, self.width, self.height, *self.params)
 
 
 class Point3DRec:
     def __init__(self, point3d_id, xyz, rgb):
         self.point3d_id = point3d_id
-        self.xyz = xyz          # Vector world
-        self.rgb = rgb          # (r,g,b) uint8
-        self.error = 0.0        # unknown; leave 0
-        self.track = []         # list of (image_id, point2d_idx)
+        self.xyz = xyz  # Vector world
+        self.rgb = rgb  # (r,g,b) uint8
+        self.error = 0.0  # unknown; leave 0
+        self.track = []  # list of (image_id, point2d_idx)
 
 
 class ImageRec:
@@ -72,16 +93,16 @@ class ImageRec:
         self.image_id = image_id
         self.camera_id = camera_id
         self.name = name
-        self.qvec = qvec        # (qw,qx,qy,qz) world->cam
-        self.tvec = tvec        # (tx,ty,tz) world->cam
-        self.points2d = []      # list of (x, y, point3d_id)
+        self.qvec = qvec  # (qw,qx,qy,qz) world->cam
+        self.tvec = tvec  # (tx,ty,tz) world->cam
+        self.points2d = []  # list of (x, y, point3d_id)
 
 
 class ColmapProblem:
     def __init__(self):
-        self.cameras = []       # list[CameraRec]
-        self.images = []        # list[ImageRec]
-        self.points3d = []      # list[Point3DRec]
+        self.cameras = []  # list[CameraRec]
+        self.images = []  # list[ImageRec]
+        self.points3d = []  # list[Point3DRec]
 
     def save(self, export_path: str):
         model_dir = os.path.join(export_path, "sparse", "0")
@@ -97,7 +118,9 @@ class ColmapProblem:
         # Trivial rig per camera, no sensors[] pose extras.
         with open(path, "w", encoding="utf-8") as f:
             f.write("# Rig calib list with one line of data per calib:\n")
-            f.write("#   RIG_ID, NUM_SENSORS, REF_SENSOR_TYPE, REF_SENSOR_ID, SENSORS[] as (SENSOR_TYPE, SENSOR_ID, HAS_POSE, [QW, QX, QY, QZ, TX, TY, TZ])\n")
+            f.write(
+                "#   RIG_ID, NUM_SENSORS, REF_SENSOR_TYPE, REF_SENSOR_ID, SENSORS[] as (SENSOR_TYPE, SENSOR_ID, HAS_POSE, [QW, QX, QY, QZ, TX, TY, TZ])\n"
+            )
             f.write(f"# Number of rigs: {len(self.cameras)}\n")
             for cam in self.cameras:
                 # one sensor: CAMERA <id>
@@ -117,12 +140,16 @@ class ColmapProblem:
         # Frame uses RIG_FROM_WORLD pose; with 1 sensor per rig, DATA_IDS is "1 CAMERA <cam_id> <image_id>".
         with open(path, "w", encoding="utf-8") as f:
             f.write("# Frame list with one line of data per frame:\n")
-            f.write("#   FRAME_ID, RIG_ID, RIG_FROM_WORLD[QW, QX, QY, QZ, TX, TY, TZ], NUM_DATA_IDS, DATA_IDS[] as (SENSOR_TYPE, SENSOR_ID, DATA_ID)\n")
+            f.write(
+                "#   FRAME_ID, RIG_ID, RIG_FROM_WORLD[QW, QX, QY, QZ, TX, TY, TZ], NUM_DATA_IDS, DATA_IDS[] as (SENSOR_TYPE, SENSOR_ID, DATA_ID)\n"
+            )
             f.write(f"# Number of frames: {len(self.images)}\n")
             for img in self.images:
                 qw, qx, qy, qz = img.qvec
                 tx, ty, tz = img.tvec
-                f.write(f"{img.image_id} {img.camera_id} {qw} {qx} {qy} {qz} {tx} {ty} {tz} 1 CAMERA {img.camera_id} {img.image_id}\n")
+                f.write(
+                    f"{img.image_id} {img.camera_id} {qw} {qx} {qy} {qz} {tx} {ty} {tz} 1 CAMERA {img.camera_id} {img.image_id}\n"
+                )
 
     def _write_images(self, path):
         # Two lines per image: header + points2D triplets.
@@ -155,25 +182,38 @@ class ColmapProblem:
 # -------------------------
 # Helpers
 # -------------------------
-def blender_cam_world_to_colmap_cam(world_to_cam: Matrix):
-    # Convert Blender 4x4 world->cam into COLMAP qvec/tvec (Hamilton quaternion, w,x,y,z)
-    R = world_to_cam.to_3x3()
-    t = world_to_cam.to_translation()
 
-    q = R.to_quaternion()  # mathutils Quaternion: (w, x, y, z)
-    # Ensure a consistent sign (COLMAP doesn't require it, but it avoids flips)
+BCAM_TO_COL = Matrix((
+    (1.0,  0.0,  0.0),
+    (0.0, -1.0,  0.0),
+    (0.0,  0.0, -1.0),
+))
+
+def get_world_to_colmap_camera_matrix(cam_obj: bpy.types.Object):
+    # World->BlenderCam:
+    W2BC = cam_obj.matrix_world.inverted()
+
+    R_w2bc = W2BC.to_3x3()
+    t_w2bc = W2BC.to_translation()
+
+    # Apply basis change: World->COLMAPCam
+    R_w2c = BCAM_TO_COL @ R_w2bc
+    t_w2c = BCAM_TO_COL @ t_w2bc
+
+    W2C = R_w2c.to_4x4()
+    W2C.translation = t_w2c
+    return W2C
+
+def world_to_cam_to_qt(W2C: Matrix):
+    R = W2C.to_3x3()
+    t = W2C.to_translation()
+    q = R.to_quaternion()  # (w,x,y,z) Hamilton, matches COLMAP expectation. [page:1]
     if q.w < 0.0:
         q.w, q.x, q.y, q.z = -q.w, -q.x, -q.y, -q.z
     return (q.w, q.x, q.y, q.z), (t.x, t.y, t.z)
 
-
-def get_world_to_camera_matrix(cam_obj: bpy.types.Object):
-    # Blender gives camera-to-world at matrix_world; invert to get world-to-camera.
-    return cam_obj.matrix_world.inverted()
-
-
 def get_mesh_vertex_world_positions_and_colors(obj: bpy.types.Object):
-    if obj.type != 'MESH':
+    if obj.type != "MESH":
         raise TypeError(f"{obj.name} is not a MESH object")
 
     mesh = obj.data
@@ -184,9 +224,9 @@ def get_mesh_vertex_world_positions_and_colors(obj: bpy.types.Object):
     if hasattr(mesh, "color_attributes") and mesh.color_attributes:
         col_attr = mesh.color_attributes.active or mesh.color_attributes[0]
         # Try to support common domains: 'POINT' or 'CORNER'
-        if col_attr.domain == 'POINT':
+        if col_attr.domain == "POINT":
             vtx_rgb = [col_attr.data[i].color[:] for i in range(len(mesh.vertices))]
-        elif col_attr.domain == 'CORNER':
+        elif col_attr.domain == "CORNER":
             # accumulate loop colors into vertices
             accum = [Vector((0.0, 0.0, 0.0)) for _ in mesh.vertices]
             cnt = [0 for _ in mesh.vertices]
@@ -221,16 +261,7 @@ def get_mesh_vertex_world_positions_and_colors(obj: bpy.types.Object):
 def project_world_point(cam: CameraRec, world_to_cam: Matrix, Pw: Vector):
     Pc = world_to_cam @ Pw.to_4d()
     x, y, z = Pc.x, Pc.y, Pc.z
-
-    proj = CAMERA_PROJECT.get(cam.model)
-    if proj is None:
-        raise ValueError(f"Unsupported camera model '{cam.model}' (no projector in CAMERA_PROJECT)")
-
-    if cam.model == "PINHOLE":
-        fx, fy, cx, cy = cam.params[:4]
-        return proj(x, y, z, fx, fy, cx, cy, cam.width, cam.height)
-
-    raise ValueError(f"Projector dispatch missing implementation for '{cam.model}'")
+    return cam.project(x, y, z)
 
 
 # -------------------------
@@ -247,10 +278,10 @@ def build_problem():
     for idx, co in enumerate(cam_objs, start=1):
         prob.cameras.append(CameraRec(camera_id=idx, obj=co))
 
-    # Create images = one per camera (“SfM not SLAM” single frame per camera convention)
+    # Create images = one per camera (for now we dont support rigs/frames)
     for cam in prob.cameras:
-        W2C = get_world_to_camera_matrix(cam.obj)
-        qvec, tvec = blender_cam_world_to_colmap_cam(W2C)
+        W2C = get_world_to_colmap_camera_matrix(cam.obj)
+        qvec, tvec = world_to_cam_to_qt(W2C)
         img_id = cam.camera_id
         name = IMAGE_NAME_FMT.format(img_id)
         prob.images.append(ImageRec(img_id, cam.camera_id, name, qvec, tvec))
@@ -258,12 +289,12 @@ def build_problem():
     # Gather points from meshes
     points = []
     base_id = 1
-    for obj_name in RENDER_OBJECTS:
+    for obj_name in TARGET_OBJECTS:
         obj = bpy.data.objects.get(obj_name)
         if obj is None:
-            raise ValueError(f"RENDER_OBJECTS contains '{obj_name}' but it was not found")
+            raise ValueError(f"{TARGET_OBJECTS=} contains '{obj_name}' but it was not found")
         verts = get_mesh_vertex_world_positions_and_colors(obj)
-        for (vidx, pw, rgb) in verts:
+        for vidx, pw, rgb in verts:
             # Create a unique POINT3D_ID. Using sequential IDs avoids collisions across multiple objects.
             points.append((base_id, pw, rgb))
             base_id += 1
@@ -275,7 +306,7 @@ def build_problem():
     # POINT2D_IDX is the zero-based index into that image’s points2d list.
     for img in prob.images:
         cam = prob.cameras[img.camera_id - 1]
-        W2C = get_world_to_camera_matrix(cam.obj)
+        W2C = get_world_to_colmap_camera_matrix(cam.obj)
 
         for p in prob.points3d:
             ok, u, v = project_world_point(cam, W2C, p.xyz)

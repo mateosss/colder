@@ -14,7 +14,7 @@ from mathutils.geometry import interpolate_bezier  # available in Blender's math
 # Script options (edit me)
 # -------------------------
 BEZIER_CURVE_LIST = ["Curve"]
-LOOKUP_TARGET = "Suzanne"  # object name all cameras will look at
+LOOKUP_TARGET = "Empty"  # object name all cameras will look at
 NUMBER_OF_CAMERAS = 20
 
 # Sampling density for arc-length approximation (higher = more accurate, slower)
@@ -28,10 +28,10 @@ CAMERA_COLLECTION_NAME = "SpawnedCameras"
 def get_initial_intrinsics(i: int) -> dict:
     # i is intentionally unused for now; keep it for future per-camera variation.
     return {
-        "model": "PINHOLE",
+        "model": "SIMPLE_RADIAL",
         "width": 640,
         "height": 480,
-        "params": [300.0, 300.0, 320.0, 240.0],  # fx, fy, cx, cy
+        "params": [320, 320, 240.0, 0.0],  # f, cx, cy, k1
     }
 
 
