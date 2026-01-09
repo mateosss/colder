@@ -10,6 +10,7 @@
 # COLMAP format reference: https://colmap.github.io/format.html
 
 import os
+import random
 import bpy
 from mathutils import Vector, Matrix
 
@@ -18,6 +19,9 @@ from mathutils import Vector, Matrix
 # -------------------------
 EXPORT_PATH = "colmap_export"
 TARGET_OBJECTS = ["Points"]
+
+POINT_3D_SAVE_NOISE_STDEV = 0.0
+POINT_2D_SAVE_NOISE_STDEV = 0.1
 
 # If True, only keep points that are observed in >= 2 images (often required for meaningful SfM)
 FILTER_MIN_TRACK_LEN_2 = False
@@ -163,7 +167,11 @@ class ColmapProblem:
                 tx, ty, tz = img.tvec
                 f.write(f"{img.image_id} {qw} {qx} {qy} {qz} {tx} {ty} {tz} {img.camera_id} {img.name}\n")
                 if img.points2d:
-                    f.write(" ".join(f"{x} {y} {pid}" for (x, y, pid) in img.points2d) + "\n")
+                    rows = []
+                    for x, y, pid in img.points2d:
+                        nx, ny = _noisy_xy(x, y)
+                        rows.append(f"{nx} {ny} {pid}")
+                    f.write(" ".join(rows) + "\n")
                 else:
                     f.write("\n")
 
@@ -176,18 +184,22 @@ class ColmapProblem:
             for p in self.points3d:
                 r, g, b = p.rgb
                 track_str = " ".join(f"{iid} {kidx}" for (iid, kidx) in p.track)
-                f.write(f"{p.point3d_id} {p.xyz.x} {p.xyz.y} {p.xyz.z} {r} {g} {b} {p.error} {track_str}\n")
+                nx, ny, nz = _noisy_xyz(p.xyz)
+                f.write(f"{p.point3d_id} {nx} {ny} {nz} {r} {g} {b} {p.error} {track_str}\n")
 
 
 # -------------------------
 # Helpers
 # -------------------------
 
-BCAM_TO_COL = Matrix((
-    (1.0,  0.0,  0.0),
-    (0.0, -1.0,  0.0),
-    (0.0,  0.0, -1.0),
-))
+BCAM_TO_COL = Matrix(
+    (
+        (1.0, 0.0, 0.0),
+        (0.0, -1.0, 0.0),
+        (0.0, 0.0, -1.0),
+    )
+)
+
 
 def get_world_to_colmap_camera_matrix(cam_obj: bpy.types.Object):
     # World->BlenderCam:
@@ -204,6 +216,7 @@ def get_world_to_colmap_camera_matrix(cam_obj: bpy.types.Object):
     W2C.translation = t_w2c
     return W2C
 
+
 def world_to_cam_to_qt(W2C: Matrix):
     R = W2C.to_3x3()
     t = W2C.to_translation()
@@ -211,6 +224,7 @@ def world_to_cam_to_qt(W2C: Matrix):
     if q.w < 0.0:
         q.w, q.x, q.y, q.z = -q.w, -q.x, -q.y, -q.z
     return (q.w, q.x, q.y, q.z), (t.x, t.y, t.z)
+
 
 def get_mesh_vertex_world_positions_and_colors(obj: bpy.types.Object):
     if obj.type != "MESH":
@@ -262,6 +276,22 @@ def project_world_point(cam: CameraRec, world_to_cam: Matrix, Pw: Vector):
     Pc = world_to_cam @ Pw.to_4d()
     x, y, z = Pc.x, Pc.y, Pc.z
     return cam.project(x, y, z)
+
+def _noisy_xyz(vec: Vector):
+    if POINT_3D_SAVE_NOISE_STDEV == 0.0:
+        return (vec.x, vec.y, vec.z)
+    dx = random.gauss(0.0, POINT_3D_SAVE_NOISE_STDEV)
+    dy = random.gauss(0.0, POINT_3D_SAVE_NOISE_STDEV)
+    dz = random.gauss(0.0, POINT_3D_SAVE_NOISE_STDEV)
+    return (vec.x + dx, vec.y + dy, vec.z + dz)
+
+
+def _noisy_xy(x: float, y: float):
+    if POINT_2D_SAVE_NOISE_STDEV == 0.0:
+        return (x, y)
+    dx = random.gauss(0.0, POINT_2D_SAVE_NOISE_STDEV)
+    dy = random.gauss(0.0, POINT_2D_SAVE_NOISE_STDEV)
+    return (x + dx, y + dy)
 
 
 # -------------------------
