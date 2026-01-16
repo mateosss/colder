@@ -22,10 +22,10 @@ import bpy
 EXPORT_PATH = "colmap_export"
 TARGET_OBJECTS = ["Points"]
 
-POINT_3D_SAVE_NOISE_STDEV = 0.0  # in meters
-POINT_2D_SAVE_NOISE_STDEV = 0.0  # TODO@mateosss: why this doesnt match pixel noise??? 1 -> ~60px
-POSE_TRANSLATION_NOISE_STDEV = 0.0  # in meters
-POSE_ROTATION_NOISE_STDEV = radians(0.0)
+POINT_3D_SAVE_NOISE_STDEV = 0.02  # in meters
+POINT_2D_SAVE_NOISE_STDEV = 0.0  # in pixels
+POSE_TRANSLATION_NOISE_STDEV = 0.01  # in meters
+POSE_ROTATION_NOISE_STDEV = 2 # in degrees
 
 
 # If True, only keep points that are observed in >= 2 images (often required for meaningful SfM)
@@ -197,35 +197,42 @@ class ColmapProblem:
 # Helpers
 # -------------------------
 
-BCAM_TO_COL = Matrix(
+# Blender world to colmap world change of basis
+# NOTE: in reality this looks like blender cam to colmap cam
+T_B_C = Matrix(
     (
-        (1.0, 0.0, 0.0),
-        (0.0, -1.0, 0.0),
-        (0.0, 0.0, -1.0),
+        (1.0, 0.0, 0.0, 0.0),  # X -> X
+        (0.0, -1.0, 0.0, 0.0),  # Y -> -Y
+        (0.0, 0.0, -1.0, 0.0),  # Z -> -Z
+        (0.0, 0.0, 0.0, 1.0),
     )
 )
+T_C_B = T_B_C.inverted()
 
 
-def get_world_to_colmap_camera_matrix(cam_obj: bpy.types.Object):
-    # World->BlenderCam:
-    W2BC = cam_obj.matrix_world.inverted()
+def blender_to_colmap_pose(obj: bpy.types.Object):
+    """
+    Get Object (O) transform/pose in COLMAP (C) world coords from Blender (B) world coords.
 
-    R_w2bc = W2BC.to_3x3()
-    t_w2bc = W2BC.to_translation()
+    Sandwich proof:
+    We have a transform T:=T_B_O that does the following for points in B frame
+    [1] p'_B = T @ p_B
+    We want an equivalent T* that does the same in C frame
+    [2] p'_C = T* @ p_C
+    Considering we can use T_B_C to express p'_B and p_B in C frame in [1]:
+    [3] (T_B_C @ p'_C) = T @ (T_B_C @ p_C)
+    [4] p'_C = (T_C_B @ T @ T_B_C) @ p_C // Therefore from [2]:
+    [5] T* = T_C_B @ T @ T_B_C // This is the equivalent transform!
 
-    # Apply basis change: World->COLMAPCam
-    R_w2c = BCAM_TO_COL @ R_w2bc
-    t_w2c = BCAM_TO_COL @ t_w2bc
-
-    W2C = R_w2c.to_4x4()
-    W2C.translation = t_w2c
-    return W2C
+    """
+    T = obj.matrix_world  # T_B_O
+    return T_C_B @ T @ T_B_C
 
 
-def world_to_cam_to_qt(W2C: Matrix):
+def mat_to_qt(W2C: Matrix):
     R = W2C.to_3x3()
     t = W2C.to_translation()
-    q = R.to_quaternion()  # (w,x,y,z) Hamilton, matches COLMAP expectation. [page:1]
+    q = R.to_quaternion()  # (w,x,y,z) Hamilton, matches COLMAP expectation.
     if q.w < 0.0:
         q.w, q.x, q.y, q.z = -q.w, -q.x, -q.y, -q.z
     return (q.w, q.x, q.y, q.z), (t.x, t.y, t.z)
@@ -236,7 +243,7 @@ def get_mesh_vertex_world_positions_and_colors(obj: bpy.types.Object):
         raise TypeError(f"{obj.name} is not a MESH object")
 
     mesh = obj.data
-    mw = obj.matrix_world
+    T_B_O = obj.matrix_world
 
     # Build per-vertex color if possible; Blender colors are typically per-loop.
     vtx_rgb = None
@@ -265,7 +272,7 @@ def get_mesh_vertex_world_positions_and_colors(obj: bpy.types.Object):
 
     verts = []
     for i, v in enumerate(mesh.vertices):
-        pw = mw @ v.co
+        pw = T_C_B @ T_B_O @ v.co  # in colmap world
         if vtx_rgb is not None:
             c = vtx_rgb[i]
             r = int(max(0, min(255, round(c[0] * 255.0))))
@@ -275,12 +282,6 @@ def get_mesh_vertex_world_positions_and_colors(obj: bpy.types.Object):
             r, g, b = 0, 0, 0
         verts.append((i, pw, (r, g, b)))
     return verts
-
-
-def project_world_point(cam: CameraRec, world_to_cam: Matrix, Pw: Vector):
-    Pc = world_to_cam @ Pw.to_4d()
-    x, y, z = Pc.x, Pc.y, Pc.z
-    return cam.project(x, y, z)
 
 
 def _noisy_translation(vec: Vector) -> tuple:
@@ -297,7 +298,7 @@ def _noisy_rotation(quat: Quaternion) -> tuple:
         return (quat.w, quat.x, quat.y, quat.z)
     axis = Vector((random.gauss(0.0, 1.0), random.gauss(0.0, 1.0), random.gauss(0.0, 1.0)))
     axis.normalize()
-    angle = random.gauss(0.0, POSE_ROTATION_NOISE_STDEV)
+    angle = random.gauss(0.0, radians(POSE_ROTATION_NOISE_STDEV))
     dq = Quaternion(axis, angle)  # axis-angle to quaternion
     q_orig = quat
     q_noisy = dq @ q_orig
@@ -339,8 +340,9 @@ def build_problem():
 
     # Create images = one per camera (for now we dont support rigs/frames)
     for cam in prob.cameras:
-        W2C = get_world_to_colmap_camera_matrix(cam.obj)
-        qvec, tvec = world_to_cam_to_qt(W2C)
+        T_C_O = T_C_B @ cam.obj.matrix_world @ T_B_C
+        T_O_C = T_C_O.inverted()
+        qvec, tvec = mat_to_qt(T_O_C)
         img_id = cam.camera_id
         name = IMAGE_NAME_FMT.format(img_id)
         prob.images.append(ImageRec(img_id, cam.camera_id, name, qvec, tvec))
@@ -365,10 +367,14 @@ def build_problem():
     # POINT2D_IDX is the zero-based index into that image’s points2d list.
     for img in prob.images:
         cam = prob.cameras[img.camera_id - 1]
-        W2C = get_world_to_colmap_camera_matrix(cam.obj)
+        T_C_O = T_C_B @ cam.obj.matrix_world @ T_B_C
+        T_O_C = T_C_O.inverted()
 
         for p in prob.points3d:
-            ok, u, v = project_world_point(cam, W2C, p.xyz)
+            p_O = T_O_C @ p.xyz.to_4d()
+            x, y, z = p_O.x, p_O.y, p_O.z
+            ok, u, v = cam.project(x, y, z)
+
             if not ok:
                 continue
             point2d_idx = len(img.points2d)  # zero-based
