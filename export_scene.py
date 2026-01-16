@@ -245,15 +245,22 @@ def get_mesh_vertex_world_positions_and_colors(obj: bpy.types.Object):
     mesh = obj.data
     T_B_O = obj.matrix_world
 
-    # Build per-vertex color if possible; Blender colors are typically per-loop.
     vtx_rgb = None
-    if hasattr(mesh, "color_attributes") and mesh.color_attributes:
-        col_attr = mesh.color_attributes.active or mesh.color_attributes[0]
-        # Try to support common domains: 'POINT' or 'CORNER'
+
+    # Find a color attribute of type FLOAT_COLOR or BYTE_COLOR
+    col_attr = None
+    if hasattr(mesh, "color_attributes"):
+        for attr in mesh.color_attributes:
+            if attr.data_type in {"FLOAT_COLOR", "BYTE_COLOR"}:
+                col_attr = attr
+                break
+
+    if col_attr is not None:
         if col_attr.domain == "POINT":
-            vtx_rgb = [col_attr.data[i].color[:] for i in range(len(mesh.vertices))]
+            # one color per vertex
+            vtx_rgb = [tuple(col_attr.data[i].color) for i in range(len(mesh.vertices))]
         elif col_attr.domain == "CORNER":
-            # accumulate loop colors into vertices
+            # average loop colors per vertex
             accum = [Vector((0.0, 0.0, 0.0)) for _ in mesh.vertices]
             cnt = [0 for _ in mesh.vertices]
             for poly in mesh.polygons:
@@ -269,6 +276,10 @@ def get_mesh_vertex_world_positions_and_colors(obj: bpy.types.Object):
                     vtx_rgb.append((c.x, c.y, c.z, 1.0))
                 else:
                     vtx_rgb.append((0.0, 0.0, 0.0, 1.0))
+        else:
+            raise ValueError(f"Unsupported color attribute domain '{col_attr.domain}'")
+    else:
+        print(f"Warning: mesh '{obj.name}' has no color attribute; vertex colors will be black")
 
     verts = []
     for i, v in enumerate(mesh.vertices):
@@ -279,7 +290,7 @@ def get_mesh_vertex_world_positions_and_colors(obj: bpy.types.Object):
             g = int(max(0, min(255, round(c[1] * 255.0))))
             b = int(max(0, min(255, round(c[2] * 255.0))))
         else:
-            r, g, b = 0, 0, 0
+            r = g = b = 0
         verts.append((i, pw, (r, g, b)))
     return verts
 
