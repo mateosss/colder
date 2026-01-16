@@ -386,6 +386,7 @@ def build_problem():
 
     # Observations: for each image, build points2d list; also populate point tracks.
     # POINT2D_IDX is the zero-based index into that image’s points2d list.
+    obs_count = [0] * (len(prob.points3d) + 1)  # obs count per point3d_id
     for img in prob.images:
         cam = prob.cameras[img.camera_id - 1]
         T_C_O = T_C_B @ cam.obj.matrix_world @ T_B_C
@@ -405,6 +406,18 @@ def build_problem():
             point2d_idx = len(img.points2d)  # zero-based
             img.points2d.append((u, v, p.point3d_id))
             p.track.append((img.image_id, point2d_idx))
+            obs_count[p.point3d_id] += 1
+
+    # Filter out points with less than 2 observations
+    valid_point_ids = set()
+    for p in prob.points3d:
+        if obs_count[p.point3d_id] >= 2:
+            valid_point_ids.add(p.point3d_id)
+    prob.points3d = [p for p in prob.points3d if p.point3d_id in valid_point_ids]
+
+    # Also filter image points2d to only keep those pointing to valid points
+    for img in prob.images:
+        img.points2d = [pt for pt in img.points2d if pt[2] in valid_point_ids]
 
     return prob
 
