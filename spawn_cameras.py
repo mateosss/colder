@@ -13,9 +13,9 @@ from mathutils.geometry import interpolate_bezier  # available in Blender's math
 # -------------------------
 # Script options (edit me)
 # -------------------------
-BEZIER_CURVE_LIST = ["Curve"]
+BEZIER_CURVE_LIST = ["Curve", "Curve.001", "Curve.002"]  # names of curve objects to use
 LOOKUP_TARGET = "Empty"  # object name all cameras will look at
-NUMBER_OF_CAMERAS = 20
+NUMBER_OF_CAMERAS = 10
 
 # Sampling density for arc-length approximation (higher = more accurate, slower)
 SAMPLES_PER_BEZIER_SEGMENT = 64
@@ -31,7 +31,7 @@ def get_initial_intrinsics(i: int) -> dict:
         "model": "SIMPLE_RADIAL",
         "width": 640,
         "height": 480,
-        "params": [320, 320, 240.0, 0.0],  # f, cx, cy, k1
+        "params": [420, 640 / 2, 480 / 2, 0.0],  # f, cx, cy, k1
     }
 
 
@@ -76,9 +76,7 @@ def _sample_curve_world_points(obj_curve: bpy.types.Object, samples_per_segment:
             b = bp[(i + 1) % n]
 
             # interpolate_bezier returns a list of Vectors in local space
-            pts = interpolate_bezier(
-                a.co, a.handle_right, b.handle_left, b.co, samples_per_segment + 1
-            )
+            pts = interpolate_bezier(a.co, a.handle_right, b.handle_left, b.co, samples_per_segment + 1)
 
             # avoid duplicating the joint point between segments
             if all_pts_world:
@@ -88,9 +86,7 @@ def _sample_curve_world_points(obj_curve: bpy.types.Object, samples_per_segment:
                 all_pts_world.append(world @ Vector(p))
 
     if len(all_pts_world) < 2:
-        raise RuntimeError(
-            f"Curve '{obj_curve.name}' yielded too few sampled points (need at least 2)."
-        )
+        raise RuntimeError(f"Curve '{obj_curve.name}' yielded too few sampled points (need at least 2).")
 
     return all_pts_world
 
@@ -165,9 +161,7 @@ def main():
     # Validate target
     target = bpy.data.objects.get(LOOKUP_TARGET)
     if target is None:
-        raise ValueError(
-            f"LOOKUP_TARGET object '{LOOKUP_TARGET}' not found in bpy.data.objects"
-        )
+        raise ValueError(f"LOOKUP_TARGET object '{LOOKUP_TARGET}' not found in bpy.data.objects")
 
     # Optional output collection
     out_col = _ensure_collection(CAMERA_COLLECTION_NAME) if USE_COLLECTION else None
@@ -176,13 +170,9 @@ def main():
     for curve_name in BEZIER_CURVE_LIST:
         curve_obj = bpy.data.objects.get(curve_name)
         if curve_obj is None:
-            raise ValueError(
-                f"Curve object '{curve_name}' not found in bpy.data.objects"
-            )
+            raise ValueError(f"Curve object '{curve_name}' not found in bpy.data.objects")
         if curve_obj.type != "CURVE":
-            raise TypeError(
-                f"'{curve_name}' is not a CURVE object (got type={curve_obj.type})"
-            )
+            raise TypeError(f"'{curve_name}' is not a CURVE object (got type={curve_obj.type})")
 
         sampled = _sample_curve_world_points(curve_obj, SAMPLES_PER_BEZIER_SEGMENT)
         cum, total_len = _arc_length_parameterization(sampled)

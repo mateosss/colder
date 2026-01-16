@@ -12,7 +12,8 @@
 import os
 import random
 import bpy
-from mathutils import Vector, Matrix
+from mathutils import Vector, Matrix, Quaternion
+from math import pi, radians
 
 # -------------------------
 # Script options (edit me)
@@ -20,8 +21,11 @@ from mathutils import Vector, Matrix
 EXPORT_PATH = "colmap_export"
 TARGET_OBJECTS = ["Points"]
 
-POINT_3D_SAVE_NOISE_STDEV = 0.0
-POINT_2D_SAVE_NOISE_STDEV = 0.1
+POINT_3D_SAVE_NOISE_STDEV = 0.0 # in meters
+POINT_2D_SAVE_NOISE_STDEV = 0.0 # TODO@mateosss: why this doesnt match pixel noise??? 1 -> ~60px
+POSE_TRANSLATION_NOISE_STDEV = 0.0  # in meters
+POSE_ROTATION_NOISE_STDEV = radians(0.0)
+
 
 # If True, only keep points that are observed in >= 2 images (often required for meaningful SfM)
 FILTER_MIN_TRACK_LEN_2 = False
@@ -97,8 +101,8 @@ class ImageRec:
         self.image_id = image_id
         self.camera_id = camera_id
         self.name = name
-        self.qvec = qvec  # (qw,qx,qy,qz) world->cam
-        self.tvec = tvec  # (tx,ty,tz) world->cam
+        self.qvec = _noisy_rotation(Quaternion(qvec))  # (qw,qx,qy,qz) world->cam
+        self.tvec = _noisy_translation(Vector(tvec))  # (tx,ty,tz) world->cam
         self.points2d = []  # list of (x, y, point3d_id)
 
 
@@ -276,6 +280,30 @@ def project_world_point(cam: CameraRec, world_to_cam: Matrix, Pw: Vector):
     Pc = world_to_cam @ Pw.to_4d()
     x, y, z = Pc.x, Pc.y, Pc.z
     return cam.project(x, y, z)
+
+
+def _noisy_translation(vec: Vector) -> tuple:
+    if POSE_TRANSLATION_NOISE_STDEV == 0.0:
+        return (vec.x, vec.y, vec.z)
+    dx = random.gauss(0.0, POSE_TRANSLATION_NOISE_STDEV)
+    dy = random.gauss(0.0, POSE_TRANSLATION_NOISE_STDEV)
+    dz = random.gauss(0.0, POSE_TRANSLATION_NOISE_STDEV)
+    return (vec.x + dx, vec.y + dy, vec.z + dz)
+
+
+def _noisy_rotation(quat: Quaternion) -> tuple:
+    if POSE_ROTATION_NOISE_STDEV == 0.0:
+        return (quat.w, quat.x, quat.y, quat.z)
+    axis = Vector((random.gauss(0.0, 1.0), random.gauss(0.0, 1.0), random.gauss(0.0, 1.0)))
+    axis.normalize()
+    angle = random.gauss(0.0, POSE_ROTATION_NOISE_STDEV)
+    dq = Quaternion(axis, angle)  # axis-angle to quaternion
+    q_orig = quat
+    q_noisy = dq @ q_orig
+    if q_noisy.w < 0.0:
+        q_noisy.w, q_noisy.x, q_noisy.y, q_noisy.z = -q_noisy.w, -q_noisy.x, -q_noisy.y, -q_noisy.z
+    return (q_noisy.w, q_noisy.x, q_noisy.y, q_noisy.z)
+
 
 def _noisy_xyz(vec: Vector):
     if POINT_3D_SAVE_NOISE_STDEV == 0.0:
