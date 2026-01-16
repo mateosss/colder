@@ -184,7 +184,7 @@ def main():
         if NUMBER_OF_CAMERAS == 1:
             distances = [0.0]
         else:
-            step = total_len / (NUMBER_OF_CAMERAS - 1)
+            step = total_len / NUMBER_OF_CAMERAS
             distances = [k * step for k in range(NUMBER_OF_CAMERAS)]
 
         for j, d in enumerate(distances):

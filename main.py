@@ -61,6 +61,19 @@ class COLDER_OT_export_scene(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class COLDER_OT_clear_cameras(bpy.types.Operator):
+    bl_idname = "colder.clear_cameras"
+    bl_label = "Clear cameras"
+
+    def execute(self, context):
+        try:
+            run_module_main("clear_cameras")
+        except Exception as e:
+            self.report({"ERROR"}, str(e))
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
 class COLDER_PT_panel(bpy.types.Panel):
     bl_idname = "COLDER_PT_panel"
     bl_label = "COLDER Tools"
@@ -72,11 +85,13 @@ class COLDER_PT_panel(bpy.types.Panel):
         layout = self.layout
         layout.operator("colder.spawn_cameras", text="Spawn cameras")
         layout.operator("colder.export_scene", text="Export scene")
+        layout.operator("colder.clear_cameras", text="Clear cameras")
 
 
 classes = (
     COLDER_OT_spawn_cameras,
     COLDER_OT_export_scene,
+    COLDER_OT_clear_cameras,
     COLDER_PT_panel,
 )
 
