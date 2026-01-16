@@ -11,9 +11,10 @@
 
 import os
 import random
-import bpy
+from math import radians
 from mathutils import Vector, Matrix, Quaternion
-from math import pi, radians
+
+import bpy
 
 # -------------------------
 # Script options (edit me)
@@ -21,8 +22,8 @@ from math import pi, radians
 EXPORT_PATH = "colmap_export"
 TARGET_OBJECTS = ["Points"]
 
-POINT_3D_SAVE_NOISE_STDEV = 0.0 # in meters
-POINT_2D_SAVE_NOISE_STDEV = 0.0 # TODO@mateosss: why this doesnt match pixel noise??? 1 -> ~60px
+POINT_3D_SAVE_NOISE_STDEV = 0.0  # in meters
+POINT_2D_SAVE_NOISE_STDEV = 0.0  # TODO@mateosss: why this doesnt match pixel noise??? 1 -> ~60px
 POSE_TRANSLATION_NOISE_STDEV = 0.0  # in meters
 POSE_ROTATION_NOISE_STDEV = radians(0.0)
 
@@ -352,7 +353,7 @@ def build_problem():
         if obj is None:
             raise ValueError(f"{TARGET_OBJECTS=} contains '{obj_name}' but it was not found")
         verts = get_mesh_vertex_world_positions_and_colors(obj)
-        for vidx, pw, rgb in verts:
+        for _, pw, rgb in verts:
             # Create a unique POINT3D_ID. Using sequential IDs avoids collisions across multiple objects.
             points.append((base_id, pw, rgb))
             base_id += 1

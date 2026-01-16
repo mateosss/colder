@@ -25,8 +25,8 @@ USE_COLLECTION = True
 CAMERA_COLLECTION_NAME = "SpawnedCameras"
 
 
-def get_initial_intrinsics(i: int) -> dict:
-    # i is intentionally unused for now; keep it for future per-camera variation.
+def get_initial_intrinsics(_: int) -> dict:
+    # parameter is intentionally unused for now; keep it for future per-camera variation.
     return {
         "model": "SIMPLE_RADIAL",
         "width": 640,

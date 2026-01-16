@@ -1,0 +1,9 @@
+[MESSAGES CONTROL]
+disable =
+    invalid-name, # One letter names improve readability in short scopes
+    fixme, # To-do reminders in code are not immediate concerns
+    line-too-long, # We abide to what the black formater decides
+    missing-module-docstring, # we dont enforce documentation
+    missing-class-docstring, # we dont enforce documentation
+    missing-function-docstring, # we dont enforce documentation
+    unnecessary-lambda-assignment, # lambdas can make code more readable

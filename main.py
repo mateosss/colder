@@ -1,3 +1,8 @@
+import sys
+import importlib
+from pathlib import Path
+import bpy
+
 bl_info = {
     "name": "COLDER - Colmap Export Helper",
     "author": "Mateo de Mayo",
@@ -6,11 +11,6 @@ bl_info = {
     "location": "View3D > Sidebar > COLDER",
     "category": "3D View",
 }
-
-import sys
-import importlib
-from pathlib import Path
-import bpy
 
 
 def ensure_blend_dir_on_syspath():
@@ -42,7 +42,7 @@ class COLDER_OT_spawn_cameras(bpy.types.Operator):
     def execute(self, context):
         try:
             run_module_main("spawn_cameras")
-        except Exception as e:
+        except Exception as e: # pylint: disable=broad-except
             self.report({"ERROR"}, str(e))
             return {"CANCELLED"}
         return {"FINISHED"}
@@ -55,7 +55,7 @@ class COLDER_OT_export_scene(bpy.types.Operator):
     def execute(self, context):
         try:
             run_module_main("export_scene")
-        except Exception as e:
+        except Exception as e: # pylint: disable=broad-except
             self.report({"ERROR"}, str(e))
             return {"CANCELLED"}
         return {"FINISHED"}
@@ -68,7 +68,7 @@ class COLDER_OT_clear_cameras(bpy.types.Operator):
     def execute(self, context):
         try:
             run_module_main("clear_cameras")
-        except Exception as e:
+        except Exception as e: # pylint: disable=broad-except
             self.report({"ERROR"}, str(e))
             return {"CANCELLED"}
         return {"FINISHED"}
