@@ -25,11 +25,11 @@ TARGET_OBJECTS = ["Points"]
 POINT_3D_SAVE_NOISE_STDEV = 0.02  # in meters
 POINT_2D_SAVE_NOISE_STDEV = 0.0  # in pixels
 POSE_TRANSLATION_NOISE_STDEV = 0.01  # in meters
-POSE_ROTATION_NOISE_STDEV = 2 # in degrees
+POSE_ROTATION_NOISE_STDEV = 2  # in degrees
 
+POINT_3D_DENSITY = 1  # fraction of vertices to keep, 1 for all
+POINT_2D_DENSITY = 1  # fraction of observations to keep, 1 for all
 
-# If True, only keep points that are observed in >= 2 images (often required for meaningful SfM)
-FILTER_MIN_TRACK_LEN_2 = False
 
 # Image name pattern in images.txt (COLMAP typically wants actual image filenames; this is synthetic)
 IMAGE_NAME_FMT = "cam_{:04d}.png"
@@ -255,11 +255,16 @@ def get_mesh_vertex_world_positions_and_colors(obj: bpy.types.Object):
                 col_attr = attr
                 break
 
+    if POINT_3D_DENSITY < 1.0:
+        idxs = random.sample(range(len(mesh.vertices)), int(len(mesh.vertices) * POINT_3D_DENSITY))
+    else:
+        idxs = range(len(mesh.vertices))
+
     if col_attr is not None:
-        if col_attr.domain == "POINT":
+        if col_attr.domain == "POINT":  # glb/ply vertex colors
             # one color per vertex
-            vtx_rgb = [tuple(col_attr.data[i].color) for i in range(len(mesh.vertices))]
-        elif col_attr.domain == "CORNER":
+            vtx_rgb = [tuple(col_attr.data[i].color) for i in idxs]
+        elif col_attr.domain == "CORNER":  # vertex paint
             # average loop colors per vertex
             accum = [Vector((0.0, 0.0, 0.0)) for _ in mesh.vertices]
             cnt = [0 for _ in mesh.vertices]
@@ -282,7 +287,8 @@ def get_mesh_vertex_world_positions_and_colors(obj: bpy.types.Object):
         print(f"Warning: mesh '{obj.name}' has no color attribute; vertex colors will be black")
 
     verts = []
-    for i, v in enumerate(mesh.vertices):
+    for i, idx in enumerate(idxs):
+        v = mesh.vertices[idx]
         pw = T_C_B @ T_B_O @ v.co  # in colmap world
         if vtx_rgb is not None:
             c = vtx_rgb[i]
@@ -291,7 +297,7 @@ def get_mesh_vertex_world_positions_and_colors(obj: bpy.types.Object):
             b = int(max(0, min(255, round(c[2] * 255.0))))
         else:
             r = g = b = 0
-        verts.append((i, pw, (r, g, b)))
+        verts.append((idx, pw, (r, g, b)))
     return verts
 
 
@@ -381,7 +387,11 @@ def build_problem():
         T_C_O = T_C_B @ cam.obj.matrix_world @ T_B_C
         T_O_C = T_C_O.inverted()
 
-        for p in prob.points3d:
+        if POINT_2D_DENSITY < 1.0:
+            prob_points = random.sample(prob.points3d, int(len(prob.points3d) * POINT_2D_DENSITY))
+        else:
+            prob_points = prob.points3d
+        for p in prob_points:
             p_O = T_O_C @ p.xyz.to_4d()
             x, y, z = p_O.x, p_O.y, p_O.z
             ok, u, v = cam.project(x, y, z)
@@ -391,11 +401,6 @@ def build_problem():
             point2d_idx = len(img.points2d)  # zero-based
             img.points2d.append((u, v, p.point3d_id))
             p.track.append((img.image_id, point2d_idx))
-
-    if FILTER_MIN_TRACK_LEN_2:
-        prob.points3d = [p for p in prob.points3d if len(p.track) >= 2]
-        # Note: this does not remove now-dangling observations from images.txt.
-        # If this is enabled, add a cleanup pass (left out to keep script short).
 
     return prob
 

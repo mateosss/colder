@@ -40,11 +40,7 @@ class COLDER_OT_spawn_cameras(bpy.types.Operator):
     bl_label = "Spawn cameras"
 
     def execute(self, context):
-        try:
-            run_module_main("spawn_cameras")
-        except Exception as e: # pylint: disable=broad-except
-            self.report({"ERROR"}, str(e))
-            return {"CANCELLED"}
+        run_module_main("spawn_cameras")
         return {"FINISHED"}
 
 
@@ -53,11 +49,7 @@ class COLDER_OT_export_scene(bpy.types.Operator):
     bl_label = "Export scene"
 
     def execute(self, context):
-        try:
-            run_module_main("export_scene")
-        except Exception as e: # pylint: disable=broad-except
-            self.report({"ERROR"}, str(e))
-            return {"CANCELLED"}
+        run_module_main("export_scene")
         return {"FINISHED"}
 
 
@@ -66,11 +58,7 @@ class COLDER_OT_clear_cameras(bpy.types.Operator):
     bl_label = "Clear cameras"
 
     def execute(self, context):
-        try:
-            run_module_main("clear_cameras")
-        except Exception as e: # pylint: disable=broad-except
-            self.report({"ERROR"}, str(e))
-            return {"CANCELLED"}
+        run_module_main("clear_cameras")
         return {"FINISHED"}
 
 
