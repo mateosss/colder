@@ -35,6 +35,10 @@ POINT_2D_DENSITY = 1  # fraction of observations to keep, 1 for all
 IMAGE_NAME_FMT = "cam_{:04d}.png"
 
 
+# Fix random seed
+random.seed(42)
+
+
 # -------------------------
 # Projection models
 # -------------------------
