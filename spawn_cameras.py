@@ -13,7 +13,7 @@ from mathutils.geometry import interpolate_bezier  # available in Blender's math
 # -------------------------
 # Script options (edit me)
 # -------------------------
-BEZIER_CURVE_LIST = ["Curve", "Curve.001", "Curve.002"]  # names of curve objects to use
+BEZIER_CURVE_LIST = []  # names of curve objects to use, leave empty to use all curves in scene
 LOOKUP_TARGET = "Empty"  # object name all cameras will look at
 NUMBER_OF_CAMERAS = 10
 
@@ -167,7 +167,13 @@ def main():
     out_col = _ensure_collection(CAMERA_COLLECTION_NAME) if USE_COLLECTION else None
     cam_global_index = 0
 
-    for curve_name in BEZIER_CURVE_LIST:
+    if len(BEZIER_CURVE_LIST) != 0:
+        bezier_curve_list = BEZIER_CURVE_LIST
+    else: # Fallback to all curves in the scene if none specified
+        bezier_curve_list = [obj.name for obj in bpy.data.objects if obj.type == "CURVE"]
+        print(f"No BEZIER_CURVE_LIST specified, using all curves in scene: {bezier_curve_list}")
+
+    for curve_name in bezier_curve_list:
         curve_obj = bpy.data.objects.get(curve_name)
         if curve_obj is None:
             raise ValueError(f"Curve object '{curve_name}' not found in bpy.data.objects")

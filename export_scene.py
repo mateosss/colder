@@ -20,16 +20,16 @@ import bpy
 # Script options (edit me)
 # -------------------------
 EXPORT_PATH = "colmap_export"
-TARGET_OBJECTS = ["Points"]
+TARGET_OBJECTS = []
 
-POINT_3D_SAVE_NOISE_STDEV = 0.02  # in meters
+POINT_3D_SAVE_NOISE_STDEV = 0.0  # in meters
 POINT_2D_SAVE_NOISE_STDEV = 0.0  # in pixels
-POSE_TRANSLATION_NOISE_STDEV = 0.01  # in meters
-POSE_ROTATION_NOISE_STDEV = 2  # in degrees
+POSE_TRANSLATION_NOISE_STDEV = 0.0  # in meters
+POSE_ROTATION_NOISE_STDEV = 0  # in degrees
 
-POINT_3D_DENSITY = 1  # fraction of vertices to keep, 1 for all
-POINT_2D_DENSITY = 1  # fraction of observations to keep, 1 for all
-
+POINT_3D_DENSITY = 1.0  # fraction of vertices to keep, 1 for all
+POINT_2D_DENSITY = 1.0  # fraction of observations to keep, 1 for all
+MIN_NUM_OBS_PER_POINT3D = 2
 
 # Image name pattern in images.txt (COLMAP typically wants actual image filenames; this is synthetic)
 IMAGE_NAME_FMT = "cam_{:04d}.png"
@@ -371,10 +371,18 @@ def build_problem():
     # Gather points from meshes
     points = []
     base_id = 1
-    for obj_name in TARGET_OBJECTS:
+
+    # Fallback to all curves in the scene if none specified
+    if len(TARGET_OBJECTS) == 0:
+        target_objects = [obj.name for obj in bpy.data.objects if obj.type == "MESH"]
+        print(f"No TARGET_OBJECTS specified, using all meshes in scene: {target_objects}")
+    else:
+        target_objects = TARGET_OBJECTS
+
+    for obj_name in target_objects:
         obj = bpy.data.objects.get(obj_name)
         if obj is None:
-            raise ValueError(f"{TARGET_OBJECTS=} contains '{obj_name}' but it was not found")
+            raise ValueError(f"{target_objects=} contains '{obj_name}' but it was not found")
         verts = get_mesh_vertex_world_positions_and_colors(obj)
         for _, pw, rgb in verts:
             # Create a unique POINT3D_ID. Using sequential IDs avoids collisions across multiple objects.
@@ -411,7 +419,7 @@ def build_problem():
     # Filter out points with less than 2 observations
     valid_point_ids = set()
     for p in prob.points3d:
-        if obs_count[p.point3d_id] >= 2:
+        if obs_count[p.point3d_id] >= MIN_NUM_OBS_PER_POINT3D:
             valid_point_ids.add(p.point3d_id)
     prob.points3d = [p for p in prob.points3d if p.point3d_id in valid_point_ids]
 
