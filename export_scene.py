@@ -13,26 +13,27 @@ import os
 import random
 from math import radians
 from mathutils import Vector, Matrix, Quaternion
+from dataclasses import dataclass, field
 
 import bpy
 
-# -------------------------
-# Script options (edit me)
-# -------------------------
-EXPORT_PATH = "colmap_export"
-TARGET_OBJECTS = []
 
-POINT_3D_SAVE_NOISE_STDEV = 0.0  # in meters
-POINT_2D_SAVE_NOISE_STDEV = 0.0  # in pixels
-POSE_TRANSLATION_NOISE_STDEV = 0.0  # in meters
-POSE_ROTATION_NOISE_STDEV = 0  # in degrees
+@dataclass
+class ExportSceneConfig:
+    EXPORT_PATH: str = "colmap_export"
+    TARGET_OBJECTS: list[str] = field(default_factory=list)  # empty=list means all mesh objects
 
-POINT_3D_DENSITY = 1.0  # fraction of vertices to keep, 1 for all
-POINT_2D_DENSITY = 1.0  # fraction of observations to keep, 1 for all
-MIN_NUM_OBS_PER_POINT3D = 2
+    POINT_3D_SAVE_NOISE_STDEV: float = 0.0  # in meters
+    POINT_2D_SAVE_NOISE_STDEV: float = 0.0  # in pixels
+    POSE_TRANSLATION_NOISE_STDEV: float = 0.0  # in meters
+    POSE_ROTATION_NOISE_STDEV: float = 0.0  # in degrees
 
-# Image name pattern in images.txt (COLMAP typically wants actual image filenames; this is synthetic)
-IMAGE_NAME_FMT = "cam_{:04d}.png"
+    POINT_3D_DENSITY: float = 1.0  # fraction of vertices to keep, 1 for all
+    POINT_2D_DENSITY: float = 1.0  # fraction of observations to keep, 1 for all
+    MIN_NUM_OBS_PER_POINT3D: int = 2
+
+    # Image name pattern in images.txt (COLMAP typically wants actual image filenames; this is synthetic)
+    IMAGE_NAME_FMT: str = "cam_{:04d}.png"
 
 
 # Fix random seed
@@ -102,17 +103,39 @@ class Point3DRec:
 
 
 class ImageRec:
-    def __init__(self, image_id, camera_id, name, qvec, tvec):
+    def __init__(self, c: ExportSceneConfig, image_id, camera_id, name, qvec, tvec):
         self.image_id = image_id
         self.camera_id = camera_id
         self.name = name
-        self.qvec = _noisy_rotation(Quaternion(qvec))  # (qw,qx,qy,qz) world->cam
-        self.tvec = _noisy_translation(Vector(tvec))  # (tx,ty,tz) world->cam
+        self.qvec = self._noisy_rotation(c, Quaternion(qvec))  # (qw,qx,qy,qz) world->cam
+        self.tvec = self._noisy_translation(c, Vector(tvec))  # (tx,ty,tz) world->cam
         self.points2d = []  # list of (x, y, point3d_id)
+
+    def _noisy_translation(self, c: ExportSceneConfig, vec: Vector) -> tuple:
+        if c.POSE_TRANSLATION_NOISE_STDEV == 0.0:
+            return (vec.x, vec.y, vec.z)
+        dx = random.gauss(0.0, c.POSE_TRANSLATION_NOISE_STDEV)
+        dy = random.gauss(0.0, c.POSE_TRANSLATION_NOISE_STDEV)
+        dz = random.gauss(0.0, c.POSE_TRANSLATION_NOISE_STDEV)
+        return (vec.x + dx, vec.y + dy, vec.z + dz)
+
+    def _noisy_rotation(self, c: ExportSceneConfig, quat: Quaternion) -> tuple:
+        if c.POSE_ROTATION_NOISE_STDEV == 0.0:
+            return (quat.w, quat.x, quat.y, quat.z)
+        axis = Vector((random.gauss(0.0, 1.0), random.gauss(0.0, 1.0), random.gauss(0.0, 1.0)))
+        axis.normalize()
+        angle = random.gauss(0.0, radians(c.POSE_ROTATION_NOISE_STDEV))
+        dq = Quaternion(axis, angle)  # axis-angle to quaternion
+        q_orig = quat
+        q_noisy = dq @ q_orig
+        if q_noisy.w < 0.0:
+            q_noisy.w, q_noisy.x, q_noisy.y, q_noisy.z = -q_noisy.w, -q_noisy.x, -q_noisy.y, -q_noisy.z
+        return (q_noisy.w, q_noisy.x, q_noisy.y, q_noisy.z)
 
 
 class ColmapProblem:
-    def __init__(self):
+    def __init__(self, config: ExportSceneConfig):
+        self.config = config
         self.cameras = []  # list[CameraRec]
         self.images = []  # list[ImageRec]
         self.points3d = []  # list[Point3DRec]
@@ -178,7 +201,7 @@ class ColmapProblem:
                 if img.points2d:
                     rows = []
                     for x, y, pid in img.points2d:
-                        nx, ny = _noisy_xy(x, y)
+                        nx, ny = self._noisy_xy(x, y)
                         rows.append(f"{nx} {ny} {pid}")
                     f.write(" ".join(rows) + "\n")
                 else:
@@ -193,8 +216,23 @@ class ColmapProblem:
             for p in self.points3d:
                 r, g, b = p.rgb
                 track_str = " ".join(f"{iid} {kidx}" for (iid, kidx) in p.track)
-                nx, ny, nz = _noisy_xyz(p.xyz)
+                nx, ny, nz = self._noisy_xyz(p.xyz)
                 f.write(f"{p.point3d_id} {nx} {ny} {nz} {r} {g} {b} {p.error} {track_str}\n")
+
+    def _noisy_xyz(self, vec: Vector):
+        if self.config.POINT_3D_SAVE_NOISE_STDEV == 0.0:
+            return (vec.x, vec.y, vec.z)
+        dx = random.gauss(0.0, self.config.POINT_3D_SAVE_NOISE_STDEV)
+        dy = random.gauss(0.0, self.config.POINT_3D_SAVE_NOISE_STDEV)
+        dz = random.gauss(0.0, self.config.POINT_3D_SAVE_NOISE_STDEV)
+        return (vec.x + dx, vec.y + dy, vec.z + dz)
+
+    def _noisy_xy(self, x: float, y: float):
+        if self.config.POINT_2D_SAVE_NOISE_STDEV == 0.0:
+            return (x, y)
+        dx = random.gauss(0.0, self.config.POINT_2D_SAVE_NOISE_STDEV)
+        dy = random.gauss(0.0, self.config.POINT_2D_SAVE_NOISE_STDEV)
+        return (x + dx, y + dy)
 
 
 # -------------------------
@@ -242,7 +280,7 @@ def mat_to_qt(W2C: Matrix):
     return (q.w, q.x, q.y, q.z), (t.x, t.y, t.z)
 
 
-def get_mesh_vertex_world_positions_and_colors(obj: bpy.types.Object):
+def get_mesh_vertex_world_positions_and_colors(c: ExportSceneConfig, obj: bpy.types.Object):
     if obj.type != "MESH":
         raise TypeError(f"{obj.name} is not a MESH object")
 
@@ -259,8 +297,8 @@ def get_mesh_vertex_world_positions_and_colors(obj: bpy.types.Object):
                 col_attr = attr
                 break
 
-    if POINT_3D_DENSITY < 1.0:
-        idxs = random.sample(range(len(mesh.vertices)), int(len(mesh.vertices) * POINT_3D_DENSITY))
+    if c.POINT_3D_DENSITY < 1.0:
+        idxs = random.sample(range(len(mesh.vertices)), int(len(mesh.vertices) * c.POINT_3D_DENSITY))
     else:
         idxs = range(len(mesh.vertices))
 
@@ -305,51 +343,11 @@ def get_mesh_vertex_world_positions_and_colors(obj: bpy.types.Object):
     return verts
 
 
-def _noisy_translation(vec: Vector) -> tuple:
-    if POSE_TRANSLATION_NOISE_STDEV == 0.0:
-        return (vec.x, vec.y, vec.z)
-    dx = random.gauss(0.0, POSE_TRANSLATION_NOISE_STDEV)
-    dy = random.gauss(0.0, POSE_TRANSLATION_NOISE_STDEV)
-    dz = random.gauss(0.0, POSE_TRANSLATION_NOISE_STDEV)
-    return (vec.x + dx, vec.y + dy, vec.z + dz)
-
-
-def _noisy_rotation(quat: Quaternion) -> tuple:
-    if POSE_ROTATION_NOISE_STDEV == 0.0:
-        return (quat.w, quat.x, quat.y, quat.z)
-    axis = Vector((random.gauss(0.0, 1.0), random.gauss(0.0, 1.0), random.gauss(0.0, 1.0)))
-    axis.normalize()
-    angle = random.gauss(0.0, radians(POSE_ROTATION_NOISE_STDEV))
-    dq = Quaternion(axis, angle)  # axis-angle to quaternion
-    q_orig = quat
-    q_noisy = dq @ q_orig
-    if q_noisy.w < 0.0:
-        q_noisy.w, q_noisy.x, q_noisy.y, q_noisy.z = -q_noisy.w, -q_noisy.x, -q_noisy.y, -q_noisy.z
-    return (q_noisy.w, q_noisy.x, q_noisy.y, q_noisy.z)
-
-
-def _noisy_xyz(vec: Vector):
-    if POINT_3D_SAVE_NOISE_STDEV == 0.0:
-        return (vec.x, vec.y, vec.z)
-    dx = random.gauss(0.0, POINT_3D_SAVE_NOISE_STDEV)
-    dy = random.gauss(0.0, POINT_3D_SAVE_NOISE_STDEV)
-    dz = random.gauss(0.0, POINT_3D_SAVE_NOISE_STDEV)
-    return (vec.x + dx, vec.y + dy, vec.z + dz)
-
-
-def _noisy_xy(x: float, y: float):
-    if POINT_2D_SAVE_NOISE_STDEV == 0.0:
-        return (x, y)
-    dx = random.gauss(0.0, POINT_2D_SAVE_NOISE_STDEV)
-    dy = random.gauss(0.0, POINT_2D_SAVE_NOISE_STDEV)
-    return (x + dx, y + dy)
-
-
 # -------------------------
 # Main build
 # -------------------------
-def build_problem():
-    prob = ColmapProblem()
+def build_problem(c: ExportSceneConfig):
+    prob = ColmapProblem(c)
 
     # Gather cameras (all camera objects in scene, sorted by name for determinism)
     cam_objs = [o for o in bpy.context.scene.objects if o.type == "CAMERA"]
@@ -365,25 +363,25 @@ def build_problem():
         T_O_C = T_C_O.inverted()
         qvec, tvec = mat_to_qt(T_O_C)
         img_id = cam.camera_id
-        name = IMAGE_NAME_FMT.format(img_id)
-        prob.images.append(ImageRec(img_id, cam.camera_id, name, qvec, tvec))
+        name = c.IMAGE_NAME_FMT.format(img_id)
+        prob.images.append(ImageRec(c, img_id, cam.camera_id, name, qvec, tvec))
 
     # Gather points from meshes
     points = []
     base_id = 1
 
     # Fallback to all curves in the scene if none specified
-    if len(TARGET_OBJECTS) == 0:
+    if len(c.TARGET_OBJECTS) == 0:
         target_objects = [obj.name for obj in bpy.data.objects if obj.type == "MESH"]
         print(f"No TARGET_OBJECTS specified, using all meshes in scene: {target_objects}")
     else:
-        target_objects = TARGET_OBJECTS
+        target_objects = c.TARGET_OBJECTS
 
     for obj_name in target_objects:
         obj = bpy.data.objects.get(obj_name)
         if obj is None:
             raise ValueError(f"{target_objects=} contains '{obj_name}' but it was not found")
-        verts = get_mesh_vertex_world_positions_and_colors(obj)
+        verts = get_mesh_vertex_world_positions_and_colors(c, obj)
         for _, pw, rgb in verts:
             # Create a unique POINT3D_ID. Using sequential IDs avoids collisions across multiple objects.
             points.append((base_id, pw, rgb))
@@ -400,8 +398,8 @@ def build_problem():
         T_C_O = T_C_B @ cam.obj.matrix_world @ T_B_C
         T_O_C = T_C_O.inverted()
 
-        if POINT_2D_DENSITY < 1.0:
-            prob_points = random.sample(prob.points3d, int(len(prob.points3d) * POINT_2D_DENSITY))
+        if c.POINT_2D_DENSITY < 1.0:
+            prob_points = random.sample(prob.points3d, int(len(prob.points3d) * c.POINT_2D_DENSITY))
         else:
             prob_points = prob.points3d
         for p in prob_points:
@@ -419,7 +417,7 @@ def build_problem():
     # Filter out points with less than 2 observations
     valid_point_ids = set()
     for p in prob.points3d:
-        if obs_count[p.point3d_id] >= MIN_NUM_OBS_PER_POINT3D:
+        if obs_count[p.point3d_id] >= c.MIN_NUM_OBS_PER_POINT3D:
             valid_point_ids.add(p.point3d_id)
     prob.points3d = [p for p in prob.points3d if p.point3d_id in valid_point_ids]
 
@@ -430,9 +428,14 @@ def build_problem():
     return prob
 
 
+def export_scene(config: ExportSceneConfig):
+    prob = build_problem(config)
+    prob.save(config.EXPORT_PATH)
+
+
 def main():
-    prob = build_problem()
-    prob.save(EXPORT_PATH)
+    config = ExportSceneConfig()
+    export_scene(config)
 
 
 if __name__ == "__main__":

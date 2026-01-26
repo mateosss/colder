@@ -9,20 +9,20 @@
 import bpy
 from mathutils import Vector
 from mathutils.geometry import interpolate_bezier  # available in Blender's mathutils
+from dataclasses import dataclass, field
 
-# -------------------------
-# Script options (edit me)
-# -------------------------
-BEZIER_CURVE_LIST = []  # names of curve objects to use, leave empty to use all curves in scene
-LOOKUP_TARGET = "Empty"  # object name all cameras will look at
-NUMBER_OF_CAMERAS = 10
+@dataclass
+class SpawnCamerasConfig:
+    BEZIER_CURVE_LIST: list[str] = field(default_factory=list)  # names of curve objects
+    LOOKUP_TARGET: str = "Empty"  # object name all cameras will look at
+    NUMBER_OF_CAMERAS: int = 10
 
-# Sampling density for arc-length approximation (higher = more accurate, slower)
-SAMPLES_PER_BEZIER_SEGMENT = 64
+    # Sampling density for arc-length approximation (higher = more accurate, slower)
+    SAMPLES_PER_BEZIER_SEGMENT: int = 64
 
-# If True, creates/uses a collection to keep things tidy
-USE_COLLECTION = True
-CAMERA_COLLECTION_NAME = "SpawnedCameras"
+    # If True, creates/uses a collection to keep things tidy
+    USE_COLLECTION: bool = True
+    CAMERA_COLLECTION_NAME: str = "SpawnedCameras"
 
 
 def get_initial_intrinsics(_: int) -> dict:
@@ -157,18 +157,17 @@ def _create_camera(
     return cam_obj
 
 
-def main():
+def spawn_cameras(c: SpawnCamerasConfig):
     # Validate target
-    target = bpy.data.objects.get(LOOKUP_TARGET)
+    target = bpy.data.objects.get(c.LOOKUP_TARGET)
     if target is None:
-        raise ValueError(f"LOOKUP_TARGET object '{LOOKUP_TARGET}' not found in bpy.data.objects")
-
+        raise ValueError(f"LOOKUP_TARGET object '{c.LOOKUP_TARGET}' not found in bpy.data.objects")
     # Optional output collection
-    out_col = _ensure_collection(CAMERA_COLLECTION_NAME) if USE_COLLECTION else None
+    out_col = _ensure_collection(c.CAMERA_COLLECTION_NAME) if c.USE_COLLECTION else None
     cam_global_index = 0
 
-    if len(BEZIER_CURVE_LIST) != 0:
-        bezier_curve_list = BEZIER_CURVE_LIST
+    if len(c.BEZIER_CURVE_LIST) != 0:
+        bezier_curve_list = c.BEZIER_CURVE_LIST
     else: # Fallback to all curves in the scene if none specified
         bezier_curve_list = [obj.name for obj in bpy.data.objects if obj.type == "CURVE"]
         print(f"No BEZIER_CURVE_LIST specified, using all curves in scene: {bezier_curve_list}")
@@ -180,18 +179,18 @@ def main():
         if curve_obj.type != "CURVE":
             raise TypeError(f"'{curve_name}' is not a CURVE object (got type={curve_obj.type})")
 
-        sampled = _sample_curve_world_points(curve_obj, SAMPLES_PER_BEZIER_SEGMENT)
+        sampled = _sample_curve_world_points(curve_obj, c.SAMPLES_PER_BEZIER_SEGMENT)
         cum, total_len = _arc_length_parameterization(sampled)
 
         # Even spacing along arc length:
         # If NUMBER_OF_CAMERAS == 1 -> put it at start.
-        if NUMBER_OF_CAMERAS <= 0:
+        if c.NUMBER_OF_CAMERAS <= 0:
             continue
-        if NUMBER_OF_CAMERAS == 1:
+        if c.NUMBER_OF_CAMERAS == 1:
             distances = [0.0]
         else:
-            step = total_len / NUMBER_OF_CAMERAS
-            distances = [k * step for k in range(NUMBER_OF_CAMERAS)]
+            step = total_len / c.NUMBER_OF_CAMERAS
+            distances = [k * step for k in range(c.NUMBER_OF_CAMERAS)]
 
         for j, d in enumerate(distances):
             p = _point_at_distance(sampled, cum, d)
@@ -202,6 +201,9 @@ def main():
 
             cam_global_index += 1
 
+def main():
+    config = SpawnCamerasConfig()
+    spawn_cameras(config)
 
 if __name__ == "__main__":
     main()
