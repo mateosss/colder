@@ -28,8 +28,8 @@ class ExportSceneConfig:
     POSE_TRANSLATION_NOISE_STDEV: float = 0.0  # in meters
     POSE_ROTATION_NOISE_STDEV: float = 0.0  # in degrees
 
-    POINT_3D_DENSITY: float = 1.0  # fraction of vertices to keep, 1 for all
-    POINT_2D_DENSITY: float = 1.0  # fraction of observations to keep, 1 for all
+    POINT_3D_DENSITY: float = 0.2  # fraction of vertices to keep, 1 for all
+    POINT_2D_DENSITY: float = 0.2  # fraction of observations to keep, 1 for all
     MIN_NUM_OBS_PER_POINT3D: int = 2
 
     # Image name pattern in images.txt (COLMAP typically wants actual image filenames; this is synthetic)
