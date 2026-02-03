@@ -147,9 +147,18 @@ class COLDER_OT_clear_cameras(bpy.types.Operator):
     bl_label = "Clear Cameras"
 
     def execute(self, context):
-        run_module_main("clear_cameras")
+        from spawn_cameras import clear_cameras
+        clear_cameras()
         return {"FINISHED"}
 
+class COLDER_OT_apply_lookat(bpy.types.Operator):
+    bl_idname = "colder.apply_lookat"
+    bl_label = "Apply Look-At"
+
+    def execute(self, context):
+        from spawn_cameras import apply_lookat
+        apply_lookat()
+        return {"FINISHED"}
 
 # ------------------------------------------------------------------------
 # UI Panel
@@ -177,6 +186,7 @@ class COLDER_PT_panel(bpy.types.Panel):
             layout.prop(props, "camera_collection_name")
         layout.operator("colder.spawn_cameras")
         layout.operator("colder.clear_cameras")
+        layout.operator("colder.apply_lookat")
 
         layout.separator()
         layout.label(text="2. Export Scene")
@@ -209,6 +219,7 @@ classes = (
     COLDER_OT_spawn_cameras,
     COLDER_OT_export_scene,
     COLDER_OT_clear_cameras,
+    COLDER_OT_apply_lookat,
     COLDER_PT_panel,
 )
 

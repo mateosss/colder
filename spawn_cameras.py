@@ -11,6 +11,7 @@ from mathutils import Vector
 from mathutils.geometry import interpolate_bezier  # available in Blender's mathutils
 from dataclasses import dataclass, field
 
+
 @dataclass
 class SpawnCamerasConfig:
     BEZIER_CURVE_LIST: list[str] = field(default_factory=list)  # names of curve objects
@@ -168,7 +169,7 @@ def spawn_cameras(c: SpawnCamerasConfig):
 
     if len(c.BEZIER_CURVE_LIST) != 0:
         bezier_curve_list = c.BEZIER_CURVE_LIST
-    else: # Fallback to all curves in the scene if none specified
+    else:  # Fallback to all curves in the scene if none specified
         bezier_curve_list = [obj.name for obj in bpy.data.objects if obj.type == "CURVE"]
         print(f"No BEZIER_CURVE_LIST specified, using all curves in scene: {bezier_curve_list}")
 
@@ -201,9 +202,24 @@ def spawn_cameras(c: SpawnCamerasConfig):
 
             cam_global_index += 1
 
+
+def clear_cameras():
+    cameras = [obj for obj in bpy.data.objects if obj.type == "CAMERA"]
+    for cam in cameras:
+        bpy.data.objects.remove(cam, do_unlink=True)
+
+
+def apply_lookat():
+    cameras = [obj for obj in bpy.data.objects if obj.type == "CAMERA"]
+    for cam in cameras:
+        bpy.context.view_layer.objects.active = cam
+        bpy.ops.constraint.apply(constraint="Track To", owner="OBJECT")
+
+
 def main():
     config = SpawnCamerasConfig()
     spawn_cameras(config)
+
 
 if __name__ == "__main__":
     main()
