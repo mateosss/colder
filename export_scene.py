@@ -11,6 +11,8 @@
 
 import os
 import random
+import re
+import importlib
 from math import radians
 from mathutils import Vector, Matrix, Quaternion
 from dataclasses import dataclass, field
@@ -31,6 +33,8 @@ class ExportSceneConfig:
     POINT_3D_DENSITY: float = 0.2  # fraction of vertices to keep, 1 for all
     POINT_2D_DENSITY: float = 0.2  # fraction of observations to keep, 1 for all
     MIN_NUM_OBS_PER_POINT3D: int = 2
+    DEPTHMAPS_OCCLUSIONS: bool = False
+    DEPTH_OCCLUSION_THRESH: float = 10.0  # in meters
 
     # Image name pattern in images.txt (COLMAP typically wants actual image filenames; this is synthetic)
     IMAGE_NAME_FMT: str = "cam_{:04d}.png"
@@ -38,6 +42,43 @@ class ExportSceneConfig:
 
 # Fix random seed
 random.seed(42)
+
+
+def _safe_stem(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+
+
+class DepthMapCache:
+    def __init__(self, depth_dir: str):
+        self.depth_dir = depth_dir
+        self._cache = {}
+
+    def _load_depthmap(self, path: str):
+        np = _import_optional("numpy")
+        if np is None:
+            raise RuntimeError("Depthmaps Occlusions requires numpy in Blender's Python environment")
+
+        if not os.path.exists(path):
+            raise RuntimeError(f"Depthmap file not found: {path}")
+
+        # Load NPZ format (safe pure-Python format)
+        data = np.load(path)
+        depth = data["depth"].astype(np.float32)
+        return depth
+
+    def get_depth(self, camera_name: str, u: float, v: float):
+        stem = _safe_stem(camera_name)
+        if stem not in self._cache:
+            path = os.path.join(self.depth_dir, f"{stem}.npz")
+            self._cache[stem] = self._load_depthmap(path)
+
+        depth = self._cache[stem]
+        h, w = depth.shape
+
+        # Sample nearest pixel in image coordinates (u right, v down).
+        px = max(0, min(w - 1, int(round(u))))
+        py = max(0, min(h - 1, int(round(v))))
+        return float(depth[py, px])
 
 
 # -------------------------
@@ -349,6 +390,17 @@ def get_mesh_vertex_world_positions_and_colors(c: ExportSceneConfig, obj: bpy.ty
 def build_problem(c: ExportSceneConfig):
     prob = ColmapProblem(c)
 
+    depth_cache = None
+    np_mod = None
+    if c.DEPTHMAPS_OCCLUSIONS:
+        depth_dir = os.path.join(bpy.path.abspath(c.EXPORT_PATH), "depthmaps")
+        if not os.path.isdir(depth_dir):
+            raise RuntimeError(f"Depthmaps need to be created in: {depth_dir}")
+        depth_cache = DepthMapCache(depth_dir)
+        np_mod = _import_optional("numpy")
+        if np_mod is None:
+            raise RuntimeError("Depthmaps Occlusions requires numpy in Blender's Python environment")
+
     # Gather cameras (all camera objects in scene, sorted by name for determinism)
     cam_objs = [o for o in bpy.context.scene.objects if o.type == "CAMERA"]
     cam_objs.sort(key=lambda o: o.name)
@@ -409,6 +461,14 @@ def build_problem(c: ExportSceneConfig):
 
             if not ok:
                 continue
+
+            if depth_cache is not None:
+                depth_value = depth_cache.get_depth(cam.obj.name, u, v)
+                if np_mod.isfinite(depth_value):
+                    point_distance = (x * x + y * y + z * z) ** 0.5
+                    if point_distance > depth_value + c.DEPTH_OCCLUSION_THRESH:
+                        continue
+
             point2d_idx = len(img.points2d)  # zero-based
             img.points2d.append((u, v, p.point3d_id))
             p.track.append((img.image_id, point2d_idx))
@@ -431,6 +491,13 @@ def build_problem(c: ExportSceneConfig):
 def export_scene(config: ExportSceneConfig):
     prob = build_problem(config)
     prob.save(config.EXPORT_PATH)
+
+
+def _import_optional(module_name: str):
+    try:
+        return importlib.import_module(module_name)
+    except ImportError:
+        return None
 
 
 def main():

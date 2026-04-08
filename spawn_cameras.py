@@ -32,7 +32,7 @@ def get_initial_intrinsics(_: int) -> dict:
         "model": "SIMPLE_RADIAL",
         "width": 640,
         "height": 480,
-        "params": [420, 640 / 2, 480 / 2, 0.0],  # f, cx, cy, k1
+        "params": [480, 640 / 2, 480 / 2, 0.0],  # f, cx, cy, k1
     }
 
 
@@ -132,6 +132,17 @@ def _create_camera(
     collection=None,
 ):
     cam_data = bpy.data.cameras.new(name + "_DATA")
+    # Set camera focal length and sensor size based on intrinsics (assuming SIMPLE_RADIAL)
+    if intrinsics["model"] == "SIMPLE_RADIAL":
+        f, cx, cy, k1 = intrinsics["params"]
+        PIXEL_WIDTH_MM = 36 # 36mm is the default (horizontal) sensor width in Blender
+        WIDTH_PX = intrinsics["width"]
+        FX = f
+        focal_length_mm = FX * PIXEL_WIDTH_MM / WIDTH_PX
+        cam_data.lens = focal_length_mm
+    else:
+        print(f"Warning: Unsupported intrinsics model '{intrinsics['model']}', using defaults")
+
     cam_obj = bpy.data.objects.new(name, cam_data)
     cam_obj.location = location
 

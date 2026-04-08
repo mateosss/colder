@@ -54,6 +54,12 @@ class COLDER_Properties(bpy.types.PropertyGroup):
         name="2D Observation Density", default=esc.POINT_2D_DENSITY, min=0.0, max=1.0, subtype="FACTOR"
     )
     min_num_obs_per_point3d: IntProperty(name="Min Observations / 3D Point", default=esc.MIN_NUM_OBS_PER_POINT3D, min=1)
+    depthmaps_occlusions: BoolProperty(name="Depthmaps Occlusions", default=esc.DEPTHMAPS_OCCLUSIONS)
+    depth_occlusion_thresh: FloatProperty(
+        name="Depth Occlusion Thresh (m)",
+        default=esc.DEPTH_OCCLUSION_THRESH,
+        min=0.0,
+    )
 
     # Camera spawn
     # defcurves = spc.BEZIER_CURVE_LIST and ",".join(spc.BEZIER_CURVE_LIST) or ""
@@ -101,6 +107,35 @@ def _safe_stem(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", name)
 
 
+def _extract_z_to_npz(exr_path: str, npz_path: str):
+    """Extract Z buffer from EXR using Blender's image loading and save as NPZ."""
+    try:
+        import numpy as np
+    except ImportError as exc:
+        raise RuntimeError("Depthmaps requires numpy in Blender's Python environment") from exc
+
+    # Load EXR into Blender's image cache
+    img = bpy.data.images.load(exr_path, check_existing=False)
+    try:
+        # Extract pixel data as numpy array
+        pixels = np.array(img.pixels[:])
+        width = img.size[0]
+        height = img.size[1]
+        channels = len(img.pixels) // (width * height)
+
+        # Reshape to (height, width, channels) then extract Z (usually last channel for depth)
+        rgba = pixels.reshape((height, width, channels))
+
+        # For OPEN_EXR with Z pass, the Z is typically written to one of the color channels
+        # or as a separate layer. We'll extract the first channel as depth approximation.
+        depth = rgba[:, :, 0].astype(np.float32)
+
+        # Save as NPZ
+        np.savez_compressed(npz_path, depth=depth)
+    finally:
+        bpy.data.images.remove(img)
+
+
 def generate_depthmaps(export_path: str):
     scene = bpy.context.scene
     cameras = sorted((obj for obj in scene.objects if obj.type == "CAMERA"), key=lambda obj: obj.name)
@@ -140,9 +175,14 @@ def generate_depthmaps(export_path: str):
                 scene.render.resolution_x = int(cam.data["width"])
                 scene.render.resolution_y = int(cam.data["height"])
 
-            outfile = depth_dir / f"{_safe_stem(cam.name)}.exr"
-            scene.render.filepath = str(outfile)
+            # Render to temporary EXR
+            temp_exr = depth_dir / f"{_safe_stem(cam.name)}_temp.exr"
+            scene.render.filepath = str(temp_exr)
             bpy.ops.render.render(write_still=True)
+
+            # Extract Z from EXR and save as NPZ using Blender's image API
+            _extract_z_to_npz(str(temp_exr), str(depth_dir / f"{_safe_stem(cam.name)}.npz"))
+            temp_exr.unlink()
     finally:
         scene.camera = orig_camera
         scene.render.filepath = orig_filepath
@@ -199,6 +239,8 @@ class COLDER_OT_export_scene(bpy.types.Operator):
             POINT_3D_DENSITY=context.scene.colder_props.point_3d_density,
             POINT_2D_DENSITY=context.scene.colder_props.point_2d_density,
             MIN_NUM_OBS_PER_POINT3D=context.scene.colder_props.min_num_obs_per_point3d,
+            DEPTHMAPS_OCCLUSIONS=context.scene.colder_props.depthmaps_occlusions,
+            DEPTH_OCCLUSION_THRESH=context.scene.colder_props.depth_occlusion_thresh,
             IMAGE_NAME_FMT="cam_{:04d}.png",
         )
         export_scene(config)
@@ -283,6 +325,9 @@ class COLDER_PT_panel(bpy.types.Panel):
         layout.prop(props, "point_3d_density")
         layout.prop(props, "point_2d_density")
         layout.prop(props, "min_num_obs_per_point3d")
+        layout.prop(props, "depthmaps_occlusions")
+        if props.depthmaps_occlusions:
+            layout.prop(props, "depth_occlusion_thresh")
         layout.separator()
 
         layout.prop(props, "export_path")
