@@ -197,7 +197,7 @@ def spawn_cameras(c: SpawnCamerasConfig):
             p = _point_at_distance(sampled, cum, d)
 
             intr = get_initial_intrinsics(cam_global_index)
-            cam_name = f"Cam_{curve_obj.name}_{j:03d}"
+            cam_name = f"cam{cam_global_index:03d}_{curve_obj.name}_{j:03d}"
             _create_camera(cam_name, p, target, intr, collection=out_col)
 
             cam_global_index += 1

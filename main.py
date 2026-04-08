@@ -1,6 +1,7 @@
 import sys
 import importlib
 from pathlib import Path
+import re
 import bpy
 from bpy.props import (
     StringProperty,
@@ -95,6 +96,68 @@ def run_module_main(module_name: str):
     mod.main()
 
 
+def _safe_stem(name: str) -> str:
+    # Keep filenames portable and deterministic.
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+
+
+def generate_depthmaps(export_path: str):
+    scene = bpy.context.scene
+    cameras = sorted((obj for obj in scene.objects if obj.type == "CAMERA"), key=lambda obj: obj.name)
+    if not cameras:
+        raise RuntimeError("No camera objects found in the scene")
+
+    depth_dir = Path(bpy.path.abspath(export_path)) / "depthmaps"
+    depth_dir.mkdir(parents=True, exist_ok=True)
+
+    # Keep current render config untouched after batch render.
+    orig_camera = scene.camera
+    orig_filepath = scene.render.filepath
+    orig_format = scene.render.image_settings.file_format
+    orig_color_mode = scene.render.image_settings.color_mode
+    orig_color_depth = scene.render.image_settings.color_depth
+    orig_exr_codec = scene.render.image_settings.exr_codec
+    orig_use_zbuffer = getattr(scene.render.image_settings, "use_zbuffer", None)
+    orig_resolution_x = scene.render.resolution_x
+    orig_resolution_y = scene.render.resolution_y
+    orig_view_layer_depth = [vl.use_pass_z for vl in scene.view_layers]
+
+    try:
+        for view_layer in scene.view_layers:
+            view_layer.use_pass_z = True
+
+        scene.render.image_settings.file_format = "OPEN_EXR"
+        scene.render.image_settings.color_mode = "RGB"
+        scene.render.image_settings.color_depth = "32"
+        scene.render.image_settings.exr_codec = "ZIP"
+        if hasattr(scene.render.image_settings, "use_zbuffer"):
+            scene.render.image_settings.use_zbuffer = True
+
+        for cam in cameras:
+            scene.camera = cam
+
+            if "width" in cam.data and "height" in cam.data:
+                scene.render.resolution_x = int(cam.data["width"])
+                scene.render.resolution_y = int(cam.data["height"])
+
+            outfile = depth_dir / f"{_safe_stem(cam.name)}.exr"
+            scene.render.filepath = str(outfile)
+            bpy.ops.render.render(write_still=True)
+    finally:
+        scene.camera = orig_camera
+        scene.render.filepath = orig_filepath
+        scene.render.image_settings.file_format = orig_format
+        scene.render.image_settings.color_mode = orig_color_mode
+        scene.render.image_settings.color_depth = orig_color_depth
+        scene.render.image_settings.exr_codec = orig_exr_codec
+        if orig_use_zbuffer is not None:
+            scene.render.image_settings.use_zbuffer = orig_use_zbuffer
+        scene.render.resolution_x = orig_resolution_x
+        scene.render.resolution_y = orig_resolution_y
+        for view_layer, use_pass_z in zip(scene.view_layers, orig_view_layer_depth):
+            view_layer.use_pass_z = use_pass_z
+
+
 # ------------------------------------------------------------------------
 # Operators
 # ------------------------------------------------------------------------
@@ -142,6 +205,23 @@ class COLDER_OT_export_scene(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class COLDER_OT_generate_depthmaps(bpy.types.Operator):
+    bl_idname = "colder.generate_depthmaps"
+    bl_label = "Generate Depthmaps"
+
+    def execute(self, context):
+        export_path = context.scene.colder_props.export_path
+        try:
+            generate_depthmaps(export_path)
+        except (RuntimeError, ValueError) as exc:
+            self.report({"ERROR"}, f"Depthmap generation failed: {exc}")
+            return {"CANCELLED"}
+
+        output_dir = Path(bpy.path.abspath(export_path)) / "depthmaps"
+        self.report({"INFO"}, f"Depthmaps written to: {output_dir}")
+        return {"FINISHED"}
+
+
 class COLDER_OT_clear_cameras(bpy.types.Operator):
     bl_idname = "colder.clear_cameras"
     bl_label = "Clear Cameras"
@@ -185,6 +265,7 @@ class COLDER_PT_panel(bpy.types.Panel):
         if props.use_collection:
             layout.prop(props, "camera_collection_name")
         layout.operator("colder.spawn_cameras")
+        layout.operator("colder.generate_depthmaps")
         layout.operator("colder.clear_cameras")
         layout.operator("colder.apply_lookat")
 
@@ -217,6 +298,7 @@ class COLDER_PT_panel(bpy.types.Panel):
 classes = (
     COLDER_Properties,
     COLDER_OT_spawn_cameras,
+    COLDER_OT_generate_depthmaps,
     COLDER_OT_export_scene,
     COLDER_OT_clear_cameras,
     COLDER_OT_apply_lookat,
