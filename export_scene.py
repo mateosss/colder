@@ -11,9 +11,17 @@
 
 import os
 import random
+import re
+import shutil
+import numpy as np
+from pathlib import Path
+from common import DEPTHS_DIR
 from math import radians
 from mathutils import Vector, Matrix, Quaternion
 from dataclasses import dataclass, field
+from render import prepare_render, render_depth, render_rgb
+from tqdm import tqdm
+
 
 import bpy
 
@@ -32,12 +40,57 @@ class ExportSceneConfig:
     POINT_2D_DENSITY: float = 0.2  # fraction of observations to keep, 1 for all
     MIN_NUM_OBS_PER_POINT3D: int = 2
 
-    # Image name pattern in images.txt (COLMAP typically wants actual image filenames; this is synthetic)
-    IMAGE_NAME_FMT: str = "cam_{:04d}.png"
+    GENERATE_RGB: bool = True  # whether to generate RGB renders (PNG) for visualization
+    GENERATE_DEPTHS: bool = True  # whether to generate depth renders (EXR)
+    GENERATE_DEBUG_DEPTHS: bool = True  # generate depth maps in PNG for visualization
+    DEPTH_OCCLUSION: bool = True  # whether to use depthmaps to filter out occluded points
+    DEPTH_OCCLUSION_THRESH: float = 1.0  # how far from the depthmap until a point is considered occluded (in meters)
+    GENERATE_COLMAP: bool = True  # whether to generate COLMAP files
+
+    # TODO@mateosss: what about the bezier curve part of the name?
+    IMAGE_NAME_FMT: str = "cam_{:04d}.png"  # Valid names: used in images/*.png and camera object names
 
 
 # Fix random seed
 random.seed(42)
+
+
+def _safe_stem(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+
+
+class DepthMapCache:
+    def __init__(self, depth_dir: str):
+        self.depth_dir = depth_dir
+        self._cache = {}
+
+    def _load_depthmap(self, path: str):
+        if not Path(path).exists():
+            raise RuntimeError(f"Depthmap file not found: {path}")
+
+        # Load NPZ format (safe pure-Python format)
+        data = np.load(path)
+        depth = data["depth"].astype(np.float32)
+        return depth
+
+    def get_depth(self, camera_name: str, u: float, v: float):
+        stem = _safe_stem(camera_name)
+        if stem not in self._cache:
+            # TODO@mateosss: remove all usages of os.path.join in favor of pathlib.Path
+            path = os.path.join(self.depth_dir, f"{stem}.npz")
+            self._cache[stem] = self._load_depthmap(path)
+
+        depth = self._cache[stem]
+        h, w = depth.shape
+
+        # Sample nearest pixel in a window around (u, v)
+        pad = 1  # window radious in pixels
+        px = max(pad, min(w - 1 - pad, int(round(u))))
+        py = max(pad, min(h - 1 - pad, int(round(v))))
+
+        return float(depth[py - pad : py + pad + 1, px - pad : px + pad + 1].min())
+
+        # return float(depth[py, px])
 
 
 # -------------------------
@@ -140,15 +193,26 @@ class ColmapProblem:
         self.images = []  # list[ImageRec]
         self.points3d = []  # list[Point3DRec]
 
-    def save(self, export_path: str):
-        model_dir = os.path.join(export_path, "sparse", "0")
-        os.makedirs(model_dir, exist_ok=True)
+    def save(self):
+        export_path = Path(self.config.EXPORT_PATH)
 
-        self._write_rigs(os.path.join(model_dir, "rigs.txt"))
-        self._write_cameras(os.path.join(model_dir, "cameras.txt"))
-        self._write_frames(os.path.join(model_dir, "frames.txt"))
-        self._write_images(os.path.join(model_dir, "images.txt"))
-        self._write_points3d(os.path.join(model_dir, "points3D.txt"))
+        path = export_path / "sparse" / "0"
+
+        if path.exists():
+            print(f"Warning: COLMAP {path=} already exists, deleting")
+            shutil.rmtree(path)  # remove old export if it exists
+        path.mkdir(parents=True, exist_ok=True)
+
+        self._write_rigs(os.path.join(path, "rigs.txt"))
+        self._write_cameras(os.path.join(path, "cameras.txt"))
+        self._write_frames(os.path.join(path, "frames.txt"))
+        self._write_images(os.path.join(path, "images.txt"))
+        self._write_points3d(os.path.join(path, "points3D.txt"))
+
+        ncam = len(self.cameras)
+        npoints = len(self.points3d)
+        nobs = sum(len(img.points2d) for img in self.images)
+        print(f"Saved problem with {ncam} cameras, {npoints} points3D, {nobs} observations to: {path}")
 
     def _write_rigs(self, path):
         # Trivial rig per camera, no sensors[] pose extras.
@@ -349,8 +413,16 @@ def get_mesh_vertex_world_positions_and_colors(c: ExportSceneConfig, obj: bpy.ty
 def build_problem(c: ExportSceneConfig):
     prob = ColmapProblem(c)
 
+    depth_cache = None
+    if c.DEPTH_OCCLUSION:
+        depth_dir = os.path.join(bpy.path.abspath(c.EXPORT_PATH), DEPTHS_DIR)
+        if not os.path.isdir(depth_dir):
+            raise RuntimeError(f"Depthmaps need to be created in: {depth_dir}")
+        depth_cache = DepthMapCache(depth_dir)
+
     # Gather cameras (all camera objects in scene, sorted by name for determinism)
-    cam_objs = [o for o in bpy.context.scene.objects if o.type == "CAMERA"]
+    # TODO@mateosss: cameras of the right kind "cam_000X"
+    cam_objs = [o for o in bpy.context.scene.objects if o.type == "CAMERA" and re.match(r"cam_\d{4}", o.name)]
     cam_objs.sort(key=lambda o: o.name)
 
     # COLMAP ids are typically 1-based in text examples (not required, but common).
@@ -393,9 +465,9 @@ def build_problem(c: ExportSceneConfig):
     # Observations: for each image, build points2d list; also populate point tracks.
     # POINT2D_IDX is the zero-based index into that image’s points2d list.
     obs_count = [0] * (len(prob.points3d) + 1)  # obs count per point3d_id
-    for img in prob.images:
+    for img in tqdm(prob.images, desc="Building COLMAP"):
         cam = prob.cameras[img.camera_id - 1]
-        T_C_O = T_C_B @ cam.obj.matrix_world @ T_B_C
+        T_C_O = T_C_B @ cam.obj.matrix_world @ T_B_C  # matrix_world in colmap coords
         T_O_C = T_C_O.inverted()
 
         if c.POINT_2D_DENSITY < 1.0:
@@ -409,6 +481,21 @@ def build_problem(c: ExportSceneConfig):
 
             if not ok:
                 continue
+
+            if depth_cache is not None:
+                depth_value = depth_cache.get_depth(cam.obj.name, u, v)
+                if np.isfinite(depth_value):
+                    # Surprisingly, depthmaps are not point depth but z coord in most cameras:
+                    # https://github.com/blender/blender/blame/d30e4da8f8a2cff5a15c8135d82b87784fe4b19a/intern/cycles/kernel/camera/camera.h#L536-L557
+                    # pdepth = (x * x + y * y + z * z) ** 0.5
+                    pdepth = z
+                    if abs(pdepth - depth_value) > c.DEPTH_OCCLUSION_THRESH:
+                        continue
+                else:
+                    raise RuntimeError(f"{depth_value=} at {u=}, {v=} in {cam.obj.name=} is not finite")
+            else:
+                assert not c.DEPTH_OCCLUSION, "Depth occlusion is enabled but no depth cache provided"
+
             point2d_idx = len(img.points2d)  # zero-based
             img.points2d.append((u, v, p.point3d_id))
             p.track.append((img.image_id, point2d_idx))
@@ -428,9 +515,23 @@ def build_problem(c: ExportSceneConfig):
     return prob
 
 
-def export_scene(config: ExportSceneConfig):
-    prob = build_problem(config)
-    prob.save(config.EXPORT_PATH)
+def export_scene(c: ExportSceneConfig):
+    prob = build_problem(c)
+    prob.save()
+
+
+def generate_all(c: ExportSceneConfig):
+    if c.GENERATE_RGB:
+        prepare_render("COLOR", c.TARGET_OBJECTS)
+        render_rgb(c.EXPORT_PATH)
+
+    if c.GENERATE_DEPTHS:
+        prepare_render("DEPTH", c.TARGET_OBJECTS)
+        render_depth(c.EXPORT_PATH, render_dbg=c.GENERATE_DEBUG_DEPTHS)
+
+    if c.GENERATE_COLMAP:
+        prob = build_problem(c)
+        prob.save()
 
 
 def main():
