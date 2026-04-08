@@ -189,7 +189,12 @@ def render(export_path: str, rtype: str = "DEPTH"):
                 scene.render.resolution_y = int(cam.data["height"])
 
             # Render to temporary EXR
-            temp_img = img_dir / f"{_safe_stem(cam.name)}.{ext}"
+            # temp_img = img_dir / f"{_safe_stem(cam.name)}.{ext}"
+            # TODO@mateosss: Fix naming
+            cam_id = int(cam.name[3:6]) + 1
+            name: str = "cam_{:04d}.{ext}".format(cam_id, ext=ext)
+            temp_img = img_dir / f"{name}"
+
             scene.render.filepath = str(temp_img)
             bpy.ops.render.render(write_still=True)
 
