@@ -136,14 +136,27 @@ def _extract_z_to_npz(exr_path: str, npz_path: str):
         bpy.data.images.remove(img)
 
 
-def generate_depthmaps(export_path: str):
+def render(export_path: str, rtype: str = "DEPTH"):
+    if rtype == "DEPTH":
+        file_format = "OPEN_EXR"
+        color_depth = "32"
+        ext = "exr"
+        path = "depthmaps"
+    elif rtype == "COLOR":
+        file_format = "PNG"
+        color_depth = "8"
+        ext = "png"
+        path = "images"
+    else:
+        raise ValueError(f"Unsupported render type: {rtype}")
+
     scene = bpy.context.scene
     cameras = sorted((obj for obj in scene.objects if obj.type == "CAMERA"), key=lambda obj: obj.name)
     if not cameras:
         raise RuntimeError("No camera objects found in the scene")
 
-    depth_dir = Path(bpy.path.abspath(export_path)) / "depthmaps"
-    depth_dir.mkdir(parents=True, exist_ok=True)
+    img_dir = Path(bpy.path.abspath(export_path)) / path
+    img_dir.mkdir(parents=True, exist_ok=True)
 
     # Keep current render config untouched after batch render.
     orig_camera = scene.camera
@@ -161,9 +174,9 @@ def generate_depthmaps(export_path: str):
         for view_layer in scene.view_layers:
             view_layer.use_pass_z = True
 
-        scene.render.image_settings.file_format = "OPEN_EXR"
+        scene.render.image_settings.file_format = file_format
         scene.render.image_settings.color_mode = "RGB"
-        scene.render.image_settings.color_depth = "32"
+        scene.render.image_settings.color_depth = color_depth
         scene.render.image_settings.exr_codec = "ZIP"
         if hasattr(scene.render.image_settings, "use_zbuffer"):
             scene.render.image_settings.use_zbuffer = True
@@ -176,13 +189,14 @@ def generate_depthmaps(export_path: str):
                 scene.render.resolution_y = int(cam.data["height"])
 
             # Render to temporary EXR
-            temp_exr = depth_dir / f"{_safe_stem(cam.name)}_temp.exr"
-            scene.render.filepath = str(temp_exr)
+            temp_img = img_dir / f"{_safe_stem(cam.name)}.{ext}"
+            scene.render.filepath = str(temp_img)
             bpy.ops.render.render(write_still=True)
 
             # Extract Z from EXR and save as NPZ using Blender's image API
-            _extract_z_to_npz(str(temp_exr), str(depth_dir / f"{_safe_stem(cam.name)}.npz"))
-            temp_exr.unlink()
+            if rtype == "DEPTH":
+                _extract_z_to_npz(str(temp_img), str(img_dir / f"{_safe_stem(cam.name)}.npz"))
+                temp_img.unlink()
     finally:
         scene.camera = orig_camera
         scene.render.filepath = orig_filepath
@@ -247,14 +261,14 @@ class COLDER_OT_export_scene(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class COLDER_OT_generate_depthmaps(bpy.types.Operator):
-    bl_idname = "colder.generate_depthmaps"
-    bl_label = "Generate Depthmaps"
+class COLDER_OT_render_depthmaps(bpy.types.Operator):
+    bl_idname = "colder.render_depthmaps"
+    bl_label = "Render Depthmaps"
 
     def execute(self, context):
         export_path = context.scene.colder_props.export_path
         try:
-            generate_depthmaps(export_path)
+            render(export_path, rtype="DEPTH")
         except (RuntimeError, ValueError) as exc:
             self.report({"ERROR"}, f"Depthmap generation failed: {exc}")
             return {"CANCELLED"}
@@ -263,6 +277,21 @@ class COLDER_OT_generate_depthmaps(bpy.types.Operator):
         self.report({"INFO"}, f"Depthmaps written to: {output_dir}")
         return {"FINISHED"}
 
+class COLDER_OT_render_images(bpy.types.Operator):
+    bl_idname = "colder.render_images"
+    bl_label = "Render Images"
+
+    def execute(self, context):
+        export_path = context.scene.colder_props.export_path
+        try:
+            render(export_path, rtype="COLOR")
+        except (RuntimeError, ValueError) as exc:
+            self.report({"ERROR"}, f"Image rendering failed: {exc}")
+            return {"CANCELLED"}
+
+        output_dir = Path(bpy.path.abspath(export_path)) / "images"
+        self.report({"INFO"}, f"Images written to: {output_dir}")
+        return {"FINISHED"}
 
 class COLDER_OT_clear_cameras(bpy.types.Operator):
     bl_idname = "colder.clear_cameras"
@@ -307,9 +336,10 @@ class COLDER_PT_panel(bpy.types.Panel):
         if props.use_collection:
             layout.prop(props, "camera_collection_name")
         layout.operator("colder.spawn_cameras")
-        layout.operator("colder.generate_depthmaps")
         layout.operator("colder.clear_cameras")
         layout.operator("colder.apply_lookat")
+        layout.operator("colder.render_depthmaps")
+        layout.operator("colder.render_images")
 
         layout.separator()
         layout.label(text="2. Export Scene")
@@ -343,10 +373,11 @@ class COLDER_PT_panel(bpy.types.Panel):
 classes = (
     COLDER_Properties,
     COLDER_OT_spawn_cameras,
-    COLDER_OT_generate_depthmaps,
     COLDER_OT_export_scene,
     COLDER_OT_clear_cameras,
     COLDER_OT_apply_lookat,
+    COLDER_OT_render_depthmaps,
+    COLDER_OT_render_images,
     COLDER_PT_panel,
 )
 

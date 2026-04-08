@@ -191,6 +191,11 @@ class ColmapProblem:
         self._write_images(os.path.join(model_dir, "images.txt"))
         self._write_points3d(os.path.join(model_dir, "points3D.txt"))
 
+        ncam = len(self.cameras)
+        npoints = len(self.points3d)
+        nobs = sum(len(img.points2d) for img in self.images)
+        print(f"Saved problem with {ncam} cameras, {npoints} points3D, {nobs} observations to: {model_dir}")
+
     def _write_rigs(self, path):
         # Trivial rig per camera, no sensors[] pose extras.
         with open(path, "w", encoding="utf-8") as f:
