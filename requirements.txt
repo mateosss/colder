@@ -1,2 +1,4 @@
 fake-bpy-module
 ipdb
+numpy
+tqdm

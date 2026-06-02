@@ -1,7 +1,3 @@
-import sys
-import importlib
-from pathlib import Path
-import re
 import bpy
 from bpy.props import (
     StringProperty,
@@ -10,13 +6,16 @@ from bpy.props import (
     FloatProperty,
     PointerProperty,
 )
-
+from common import DEPTHS_DIR
+from render import render_rgb, render_depth
+from export_scene import ExportSceneConfig, export_scene, generate_all
+from spawn_cameras import clear_cameras, apply_lookat, spawn_cameras, SpawnCamerasConfig
 
 bl_info = {
-    "name": "COLDER - Colmap Export Helper",
+    "name": "COLDER - Synthetic SfM Dataset Generator in COLMAP format",
     "author": "Mateo de Mayo",
-    "blender": (4, 0, 0),
-    "description": "Tools to help export Blender scenes and spawn cameras in COLMAP format",
+    "blender": (5, 1, 1),
+    "description": "Tools to help create synthetic SfM data and export it to COLMAP format",
     "location": "View3D > Sidebar > COLDER",
     "category": "3D View",
 }
@@ -54,12 +53,20 @@ class COLDER_Properties(bpy.types.PropertyGroup):
         name="2D Observation Density", default=esc.POINT_2D_DENSITY, min=0.0, max=1.0, subtype="FACTOR"
     )
     min_num_obs_per_point3d: IntProperty(name="Min Observations / 3D Point", default=esc.MIN_NUM_OBS_PER_POINT3D, min=1)
-    depthmaps_occlusions: BoolProperty(name="Depthmaps Occlusions", default=esc.DEPTHMAPS_OCCLUSIONS)
-    depth_occlusion_thresh: FloatProperty(
-        name="Depth Occlusion Thresh (m)",
-        default=esc.DEPTH_OCCLUSION_THRESH,
-        min=0.0,
+
+    generate_rgb: BoolProperty(name="Generate RGB Renders", default=esc.GENERATE_RGB)
+    generate_depths: BoolProperty(name="Generate Depth Renders", default=esc.GENERATE_DEPTHS)
+    generate_debug_depths: BoolProperty(name="Generate Debug Depth Maps", default=esc.GENERATE_DEBUG_DEPTHS)
+    depth_occlusion: BoolProperty(
+        name="Depthmaps Occlusions",
+        default=esc.DEPTH_OCCLUSION,
+        description=f"Will use depthmaps from 'EXPORT_PATH/sparse/0/{DEPTHS_DIR}' folder",
     )
+    depth_occlusion_thresh: FloatProperty(
+        name="Depth Occlusion Thresh (m)", default=esc.DEPTH_OCCLUSION_THRESH, min=0.0
+    )
+
+    generate_colmap: BoolProperty(name="Generate COLMAP Scene", default=True)
 
     # Camera spawn
     # defcurves = spc.BEZIER_CURVE_LIST and ",".join(spc.BEZIER_CURVE_LIST) or ""
@@ -71,150 +78,9 @@ class COLDER_Properties(bpy.types.PropertyGroup):
     samples_per_bezier_segment: IntProperty(name="Bezier Samples", default=spc.SAMPLES_PER_BEZIER_SEGMENT, min=4)
 
     # Collection handling
+    # TODO@mateosss: Of course I want to use a camera collection, remove this option
     use_collection: BoolProperty(name="Use Camera Collection", default=True)
     camera_collection_name: StringProperty(name="Camera Collection Name", default="SpawnedCameras")
-
-
-# ------------------------------------------------------------------------
-# Utilities
-# ------------------------------------------------------------------------
-
-
-def ensure_blend_dir_on_syspath():
-    # Directory of the currently saved .blend
-    if not bpy.data.filepath:
-        return None  # unsaved file
-    script_dir = str(Path(bpy.data.filepath).parent)
-    if script_dir not in sys.path:
-        sys.path.append(script_dir)
-    return script_dir
-
-
-def run_module_main(module_name: str):
-    script_dir = ensure_blend_dir_on_syspath()
-    if script_dir is None:
-        raise RuntimeError("Save the .blend file first (needed to locate external scripts).")
-
-    mod = importlib.import_module(module_name)
-    importlib.reload(mod)  # so edits are picked up without restarting Blender
-    if not hasattr(mod, "main"):
-        raise RuntimeError(f"Module '{module_name}.py' has no main()")
-    mod.main()
-
-
-def _safe_stem(name: str) -> str:
-    # Keep filenames portable and deterministic.
-    return re.sub(r"[^A-Za-z0-9_.-]", "_", name)
-
-
-def _extract_z_to_npz(exr_path: str, npz_path: str):
-    """Extract Z buffer from EXR using Blender's image loading and save as NPZ."""
-    try:
-        import numpy as np
-    except ImportError as exc:
-        raise RuntimeError("Depthmaps requires numpy in Blender's Python environment") from exc
-
-    # Load EXR into Blender's image cache
-    img = bpy.data.images.load(exr_path, check_existing=False)
-    try:
-        # Extract pixel data as numpy array
-        pixels = np.array(img.pixels[:])
-        width = img.size[0]
-        height = img.size[1]
-        channels = len(img.pixels) // (width * height)
-
-        # Reshape to (height, width, channels) then extract Z (usually last channel for depth)
-        rgba = pixels.reshape((height, width, channels))
-
-        # For OPEN_EXR with Z pass, the Z is typically written to one of the color channels
-        # or as a separate layer. We'll extract the first channel as depth approximation.
-        depth = rgba[:, :, 0].astype(np.float32)
-
-        # Save as NPZ
-        np.savez_compressed(npz_path, depth=depth)
-    finally:
-        bpy.data.images.remove(img)
-
-
-def render(export_path: str, rtype: str = "DEPTH"):
-    if rtype == "DEPTH":
-        file_format = "OPEN_EXR"
-        color_depth = "32"
-        ext = "exr"
-        path = "depthmaps"
-    elif rtype == "COLOR":
-        file_format = "PNG"
-        color_depth = "8"
-        ext = "png"
-        path = "images"
-    else:
-        raise ValueError(f"Unsupported render type: {rtype}")
-
-    scene = bpy.context.scene
-    cameras = sorted((obj for obj in scene.objects if obj.type == "CAMERA"), key=lambda obj: obj.name)
-    if not cameras:
-        raise RuntimeError("No camera objects found in the scene")
-
-    img_dir = Path(bpy.path.abspath(export_path)) / path
-    img_dir.mkdir(parents=True, exist_ok=True)
-
-    # Keep current render config untouched after batch render.
-    orig_camera = scene.camera
-    orig_filepath = scene.render.filepath
-    orig_format = scene.render.image_settings.file_format
-    orig_color_mode = scene.render.image_settings.color_mode
-    orig_color_depth = scene.render.image_settings.color_depth
-    orig_exr_codec = scene.render.image_settings.exr_codec
-    orig_use_zbuffer = getattr(scene.render.image_settings, "use_zbuffer", None)
-    orig_resolution_x = scene.render.resolution_x
-    orig_resolution_y = scene.render.resolution_y
-    orig_view_layer_depth = [vl.use_pass_z for vl in scene.view_layers]
-
-    try:
-        for view_layer in scene.view_layers:
-            view_layer.use_pass_z = True
-
-        scene.render.image_settings.file_format = file_format
-        scene.render.image_settings.color_mode = "RGB"
-        scene.render.image_settings.color_depth = color_depth
-        scene.render.image_settings.exr_codec = "ZIP"
-        if hasattr(scene.render.image_settings, "use_zbuffer"):
-            scene.render.image_settings.use_zbuffer = True
-
-        for cam in cameras:
-            scene.camera = cam
-
-            if "width" in cam.data and "height" in cam.data:
-                scene.render.resolution_x = int(cam.data["width"])
-                scene.render.resolution_y = int(cam.data["height"])
-
-            # Render to temporary EXR
-            # temp_img = img_dir / f"{_safe_stem(cam.name)}.{ext}"
-            # TODO@mateosss: Fix naming
-            cam_id = int(cam.name[3:6]) + 1
-            name: str = "cam_{:04d}.{ext}".format(cam_id, ext=ext)
-            temp_img = img_dir / f"{name}"
-
-            scene.render.filepath = str(temp_img)
-            bpy.ops.render.render(write_still=True)
-
-            # Extract Z from EXR and save as NPZ using Blender's image API
-            if rtype == "DEPTH":
-                _extract_z_to_npz(str(temp_img), str(img_dir / f"{_safe_stem(cam.name)}.npz"))
-                temp_img.unlink()
-    finally:
-        scene.camera = orig_camera
-        scene.render.filepath = orig_filepath
-        scene.render.image_settings.file_format = orig_format
-        scene.render.image_settings.color_mode = orig_color_mode
-        scene.render.image_settings.color_depth = orig_color_depth
-        scene.render.image_settings.exr_codec = orig_exr_codec
-        if orig_use_zbuffer is not None:
-            scene.render.image_settings.use_zbuffer = orig_use_zbuffer
-        scene.render.resolution_x = orig_resolution_x
-        scene.render.resolution_y = orig_resolution_y
-        for view_layer, use_pass_z in zip(scene.view_layers, orig_view_layer_depth):
-            view_layer.use_pass_z = use_pass_z
 
 
 # ------------------------------------------------------------------------
@@ -222,22 +88,50 @@ def render(export_path: str, rtype: str = "DEPTH"):
 # ------------------------------------------------------------------------
 
 
+def make_export_config(context: bpy.types.Context) -> ExportSceneConfig:
+    return ExportSceneConfig(
+        EXPORT_PATH=context.scene.colder_props.export_path,
+        TARGET_OBJECTS=[n.strip() for n in context.scene.colder_props.target_objects.split(",") if n.strip()],
+        POINT_3D_SAVE_NOISE_STDEV=context.scene.colder_props.point_3d_noise,
+        POINT_2D_SAVE_NOISE_STDEV=context.scene.colder_props.point_2d_noise,
+        POSE_TRANSLATION_NOISE_STDEV=context.scene.colder_props.pose_translation_noise,
+        POSE_ROTATION_NOISE_STDEV=context.scene.colder_props.pose_rotation_noise,
+        POINT_3D_DENSITY=context.scene.colder_props.point_3d_density,
+        POINT_2D_DENSITY=context.scene.colder_props.point_2d_density,
+        MIN_NUM_OBS_PER_POINT3D=context.scene.colder_props.min_num_obs_per_point3d,
+        GENERATE_RGB=context.scene.colder_props.generate_rgb,
+        GENERATE_DEPTHS=context.scene.colder_props.generate_depths,
+        GENERATE_DEBUG_DEPTHS=context.scene.colder_props.generate_debug_depths,
+        DEPTH_OCCLUSION=context.scene.colder_props.depth_occlusion,
+        DEPTH_OCCLUSION_THRESH=context.scene.colder_props.depth_occlusion_thresh,
+        GENERATE_COLMAP=context.scene.colder_props.generate_colmap,
+        IMAGE_NAME_FMT=context.scene.colder_props.image_name_fmt,
+    )
+
+
+def make_camera_spawn_config(context: bpy.types.Context):
+    return SpawnCamerasConfig(
+        BEZIER_CURVE_LIST=[n.strip() for n in context.scene.colder_props.bezier_curve_list.split(",") if n.strip()],
+        LOOKUP_TARGET=context.scene.colder_props.lookup_target,
+        NUMBER_OF_CAMERAS=context.scene.colder_props.number_of_cameras,
+        SAMPLES_PER_BEZIER_SEGMENT=context.scene.colder_props.samples_per_bezier_segment,
+        USE_COLLECTION=context.scene.colder_props.use_collection,
+        CAMERA_COLLECTION_NAME=context.scene.colder_props.camera_collection_name,
+    )
+
+
 class COLDER_OT_spawn_cameras(bpy.types.Operator):
     bl_idname = "colder.spawn_cameras"
     bl_label = "Spawn Cameras"
 
     def execute(self, context):
-        from spawn_cameras import SpawnCamerasConfig, spawn_cameras
-
-        config = SpawnCamerasConfig(
-            BEZIER_CURVE_LIST=[n.strip() for n in context.scene.colder_props.bezier_curve_list.split(",") if n.strip()],
-            LOOKUP_TARGET=context.scene.colder_props.lookup_target,
-            NUMBER_OF_CAMERAS=context.scene.colder_props.number_of_cameras,
-            SAMPLES_PER_BEZIER_SEGMENT=context.scene.colder_props.samples_per_bezier_segment,
-            USE_COLLECTION=context.scene.colder_props.use_collection,
-            CAMERA_COLLECTION_NAME=context.scene.colder_props.camera_collection_name,
-        )
-        spawn_cameras(config)
+        try:
+            config = make_camera_spawn_config(context)
+            spawn_cameras(config)
+        except (RuntimeError, ValueError) as e:
+            self.report({"ERROR"}, f"Error spawning cameras: {e}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Spawned {config.NUMBER_OF_CAMERAS} cameras")
         return {"FINISHED"}
 
 
@@ -246,23 +140,13 @@ class COLDER_OT_export_scene(bpy.types.Operator):
     bl_label = "Export Scene"
 
     def execute(self, context):
-        from export_scene import ExportSceneConfig, export_scene
-
-        config = ExportSceneConfig(
-            EXPORT_PATH=context.scene.colder_props.export_path,
-            TARGET_OBJECTS=[n.strip() for n in context.scene.colder_props.target_objects.split(",") if n.strip()],
-            POINT_3D_SAVE_NOISE_STDEV=context.scene.colder_props.point_3d_noise,
-            POINT_2D_SAVE_NOISE_STDEV=context.scene.colder_props.point_2d_noise,
-            POSE_TRANSLATION_NOISE_STDEV=context.scene.colder_props.pose_translation_noise,
-            POSE_ROTATION_NOISE_STDEV=context.scene.colder_props.pose_rotation_noise,
-            POINT_3D_DENSITY=context.scene.colder_props.point_3d_density,
-            POINT_2D_DENSITY=context.scene.colder_props.point_2d_density,
-            MIN_NUM_OBS_PER_POINT3D=context.scene.colder_props.min_num_obs_per_point3d,
-            DEPTHMAPS_OCCLUSIONS=context.scene.colder_props.depthmaps_occlusions,
-            DEPTH_OCCLUSION_THRESH=context.scene.colder_props.depth_occlusion_thresh,
-            IMAGE_NAME_FMT="cam_{:04d}.png",
-        )
-        export_scene(config)
+        try:
+            config = make_export_config(context)
+            export_scene(config)
+            self.report({"INFO"}, f"Scene exported to: {config.EXPORT_PATH}")
+        except (RuntimeError, ValueError) as e:
+            self.report({"ERROR"}, f"Error exporting scene: {e}")
+            return {"CANCELLED"}
         return {"FINISHED"}
 
 
@@ -271,50 +155,73 @@ class COLDER_OT_render_depthmaps(bpy.types.Operator):
     bl_label = "Render Depthmaps"
 
     def execute(self, context):
-        export_path = context.scene.colder_props.export_path
         try:
-            render(export_path, rtype="DEPTH")
-        except (RuntimeError, ValueError) as exc:
-            self.report({"ERROR"}, f"Depthmap generation failed: {exc}")
+            export_path = context.scene.colder_props.export_path
+            output_dir = render_depth(export_path, render_dbg=context.scene.colder_props.generate_debug_depths)
+        except (RuntimeError, ValueError) as e:
+            self.report({"ERROR"}, f"Error rendering depthmaps: {e}")
             return {"CANCELLED"}
-
-        output_dir = Path(bpy.path.abspath(export_path)) / "depthmaps"
         self.report({"INFO"}, f"Depthmaps written to: {output_dir}")
         return {"FINISHED"}
+
 
 class COLDER_OT_render_images(bpy.types.Operator):
     bl_idname = "colder.render_images"
     bl_label = "Render Images"
 
     def execute(self, context):
-        export_path = context.scene.colder_props.export_path
         try:
-            render(export_path, rtype="COLOR")
-        except (RuntimeError, ValueError) as exc:
-            self.report({"ERROR"}, f"Image rendering failed: {exc}")
+            export_path = context.scene.colder_props.export_path
+            output_dir = render_rgb(export_path)
+        except (RuntimeError, ValueError) as e:
+            self.report({"ERROR"}, f"Error rendering images: {e}")
             return {"CANCELLED"}
-
-        output_dir = Path(bpy.path.abspath(export_path)) / "images"
         self.report({"INFO"}, f"Images written to: {output_dir}")
         return {"FINISHED"}
+
+
+class COLDER_OT_generate_all(bpy.types.Operator):
+    bl_idname = "colder.generate_all"
+    bl_label = "Generate All"
+
+    def execute(self, context):
+        try:
+            config = make_export_config(context)
+            generate_all(config)
+        except (RuntimeError, ValueError) as e:
+            self.report({"ERROR"}, f"Error generating all data: {e}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"All data generated in: {config.EXPORT_PATH}")
+        return {"FINISHED"}
+
 
 class COLDER_OT_clear_cameras(bpy.types.Operator):
     bl_idname = "colder.clear_cameras"
     bl_label = "Clear Cameras"
 
     def execute(self, context):
-        from spawn_cameras import clear_cameras
-        clear_cameras()
+        try:
+            clear_cameras()
+        except (RuntimeError, ValueError) as e:
+            self.report({"ERROR"}, f"Error clearing cameras: {e}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, "Cameras cleared")
         return {"FINISHED"}
+
 
 class COLDER_OT_apply_lookat(bpy.types.Operator):
     bl_idname = "colder.apply_lookat"
     bl_label = "Apply Look-At"
 
     def execute(self, context):
-        from spawn_cameras import apply_lookat
-        apply_lookat()
+        try:
+            apply_lookat()
+        except (RuntimeError, ValueError) as e:
+            self.report({"ERROR"}, f"Error applying look-at constraints: {e}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, "Look-at constraints applied")
         return {"FINISHED"}
+
 
 # ------------------------------------------------------------------------
 # UI Panel
@@ -343,8 +250,6 @@ class COLDER_PT_panel(bpy.types.Panel):
         layout.operator("colder.spawn_cameras")
         layout.operator("colder.clear_cameras")
         layout.operator("colder.apply_lookat")
-        layout.operator("colder.render_depthmaps")
-        layout.operator("colder.render_images")
 
         layout.separator()
         layout.label(text="2. Export Scene")
@@ -360,14 +265,32 @@ class COLDER_PT_panel(bpy.types.Panel):
         layout.prop(props, "point_3d_density")
         layout.prop(props, "point_2d_density")
         layout.prop(props, "min_num_obs_per_point3d")
-        layout.prop(props, "depthmaps_occlusions")
-        if props.depthmaps_occlusions:
-            layout.prop(props, "depth_occlusion_thresh")
-        layout.separator()
 
+        layout.label(text="Generation")
         layout.prop(props, "export_path")
-        layout.prop(props, "target_objects")
-        layout.operator("colder.export_scene")
+
+        box = layout.box()
+        box.prop(props, "generate_rgb")
+        if props.generate_rgb:
+            box.operator("colder.render_images")
+            # TODO: add option for rendered point size
+
+        box = layout.box()
+        box.prop(props, "generate_depths")
+        if props.generate_depths:
+            box.prop(props, "generate_debug_depths")
+            box.operator("colder.render_depthmaps")
+
+        box = layout.box()
+        box.prop(props, "generate_colmap")
+        if props.generate_colmap:
+            box.prop(props, "target_objects")
+            box.prop(props, "depth_occlusion")
+            box.prop(props, "depth_occlusion_thresh")
+            box.operator("colder.export_scene")
+
+        layout.operator("colder.generate_all")
+
         layout.separator()
 
 
@@ -379,6 +302,7 @@ classes = (
     COLDER_Properties,
     COLDER_OT_spawn_cameras,
     COLDER_OT_export_scene,
+    COLDER_OT_generate_all,
     COLDER_OT_clear_cameras,
     COLDER_OT_apply_lookat,
     COLDER_OT_render_depthmaps,

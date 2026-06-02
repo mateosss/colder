@@ -29,10 +29,11 @@ class SpawnCamerasConfig:
 def get_initial_intrinsics(_: int) -> dict:
     # parameter is intentionally unused for now; keep it for future per-camera variation.
     return {
+        "sensor_width_m": 0.036,  # 36mm is blender's default
         "model": "SIMPLE_RADIAL",
         "width": 640,
         "height": 480,
-        "params": [480, 640 / 2, 480 / 2, 0.0],  # f, cx, cy, k1
+        "params": [480, 640 / 2, 480 / 2, 0.0],  # f (f=fx=fy), cx, cy, k1
     }
 
 
@@ -135,11 +136,16 @@ def _create_camera(
     # Set camera focal length and sensor size based on intrinsics (assuming SIMPLE_RADIAL)
     if intrinsics["model"] == "SIMPLE_RADIAL":
         f, cx, cy, k1 = intrinsics["params"]
-        PIXEL_WIDTH_MM = 36 # 36mm is the default (horizontal) sensor width in Blender
-        WIDTH_PX = intrinsics["width"]
-        FX = f
-        focal_length_mm = FX * PIXEL_WIDTH_MM / WIDTH_PX
+        sensor_width_mm = intrinsics["sensor_width_m"] * 1000
+        cols = intrinsics["width"]
+        px_width = sensor_width_mm / cols
+        fx = f  # f is fx=fy in SIMPLE_RADIAL, not focal length in mm
+        focal_length_mm = fx * px_width
         cam_data.lens = focal_length_mm
+        cam_data.sensor_fit = "HORIZONTAL"
+        cam_data.sensor_width = sensor_width_mm
+        cam_data.shift_x = 0.5 - cx / intrinsics["width"]
+        cam_data.shift_y = 0.5 - cy / intrinsics["height"]
     else:
         print(f"Warning: Unsupported intrinsics model '{intrinsics['model']}', using defaults")
 
@@ -176,7 +182,7 @@ def spawn_cameras(c: SpawnCamerasConfig):
         raise ValueError(f"LOOKUP_TARGET object '{c.LOOKUP_TARGET}' not found in bpy.data.objects")
     # Optional output collection
     out_col = _ensure_collection(c.CAMERA_COLLECTION_NAME) if c.USE_COLLECTION else None
-    cam_global_index = 0
+    cam_global_index = 1
 
     if len(c.BEZIER_CURVE_LIST) != 0:
         bezier_curve_list = c.BEZIER_CURVE_LIST
@@ -208,7 +214,12 @@ def spawn_cameras(c: SpawnCamerasConfig):
             p = _point_at_distance(sampled, cum, d)
 
             intr = get_initial_intrinsics(cam_global_index)
-            cam_name = f"cam{cam_global_index:03d}_{curve_obj.name}_{j:03d}"
+            # TODO@mateosss: reformat logic to always expect cam_000Number and
+            # use000Number as global idx base, anything out of that is a warning
+            # and not used
+            # cam_name = f"cam{cam_global_index:03d}_{curve_obj.name}_{j:03d}"
+            # _create_camera(cam_name, cam_global_index, p, target, intr, collection=out_col)
+            cam_name = f"cam_{cam_global_index:04d}"
             _create_camera(cam_name, p, target, intr, collection=out_col)
 
             cam_global_index += 1
