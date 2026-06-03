@@ -157,9 +157,47 @@ def render_(export_path: Path, rtype: str = "DEPTH", render_depth_dbg: bool = Fa
     return path
 
 
+def prepare_render(rtype: str = "DEPTH"):
+    # TODO@mateosss: These should all be configurable somewhere
+    target_objects = ["Courthouse"]
+
+    RENDER_MOD = "POINT_CLOUD_RENDER"
+    MESH_MOD = "POINT_CLOUD_MESH"
+    if rtype == "DEPTH":
+        props = {"Threshold": 0.2}  # TODO@mateosss: make this a variable somewhere
+        onmod = MESH_MOD
+        offmod = RENDER_MOD
+    elif rtype == "COLOR":
+        props = {"Radius": 0.15}  # TODO@mateosss: make this a variable somewhere
+        onmod = RENDER_MOD
+        offmod = MESH_MOD
+    else:
+        raise ValueError(f"Unsupported render type: {rtype}")
+
+    for obj_name in target_objects:
+        obj = bpy.data.objects.get(obj_name)
+        if obj is None:
+            continue
+
+        # Disable the other modifier
+        offmod = obj.modifiers[offmod]
+        offmod.show_viewport = False
+        offmod.show_render = False
+
+        # Enable target modifier
+        onmod = obj.modifiers[onmod]
+        for item in onmod.node_group.interface.items_tree:
+            if item.name in props:
+                onmod[item.identifier] = props[item.name]
+        onmod.show_viewport = True
+        onmod.show_render = True
+
+
 def render_rgb(export_path: Path) -> Path:
+    prepare_render("COLOR")
     return render_(export_path, rtype="COLOR")
 
 
 def render_depth(export_path: Path, render_dbg: bool = False) -> Path:
+    prepare_render("DEPTH")
     return render_(export_path, rtype="DEPTH", render_depth_dbg=render_dbg)
