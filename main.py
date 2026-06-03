@@ -7,7 +7,7 @@ from bpy.props import (
     PointerProperty,
 )
 from common import DEPTHS_DIR
-from render import render_rgb, render_depth
+from render import prepare_render, render_rgb, render_depth
 from export_scene import ExportSceneConfig, export_scene, generate_all
 from spawn_cameras import clear_cameras, apply_lookat, spawn_cameras, SpawnCamerasConfig
 
@@ -157,6 +157,8 @@ class COLDER_OT_render_depthmaps(bpy.types.Operator):
     def execute(self, context):
         try:
             export_path = context.scene.colder_props.export_path
+            target_objects = context.scene.colder_props.target_objects.split(",")
+            prepare_render("DEPTH", target_objects)
             output_dir = render_depth(export_path, render_dbg=context.scene.colder_props.generate_debug_depths)
         except (RuntimeError, ValueError) as e:
             self.report({"ERROR"}, f"Error rendering depthmaps: {e}")
@@ -172,6 +174,8 @@ class COLDER_OT_render_images(bpy.types.Operator):
     def execute(self, context):
         try:
             export_path = context.scene.colder_props.export_path
+            target_objects = context.scene.colder_props.target_objects.split(",")
+            prepare_render("COLOR", target_objects)
             output_dir = render_rgb(export_path)
         except (RuntimeError, ValueError) as e:
             self.report({"ERROR"}, f"Error rendering images: {e}")
