@@ -10,13 +10,20 @@ from common import DEPTHS_DIR
 from render import prepare_render, render_rgb, render_depth
 from export_scene import ExportSceneConfig, export_scene, generate_all
 from spawn_cameras import clear_cameras, apply_lookat, spawn_cameras, SpawnCamerasConfig
+import toml
+
+# Get from pyproject.toml to avoid duplication
+pyproject = toml.load("pyproject.toml")
+PROJECT_NAME = pyproject["project"]["name"]
+PROJECT_DESCRIPTION = pyproject["project"]["description"]
+PROJECT_AUTHOR = pyproject["project"]["authors"][0]["name"]
 
 bl_info = {
-    "name": "COLDER - Synthetic SfM Dataset Generator in COLMAP format",
-    "author": "Mateo de Mayo",
+    "name": f"{PROJECT_NAME} - {PROJECT_DESCRIPTION}",
+    "author": PROJECT_AUTHOR,
     "blender": (5, 1, 1),
     "description": "Tools to help create synthetic SfM data and export it to COLMAP format",
-    "location": "View3D > Sidebar > COLDER",
+    "location": f"View3D > Sidebar > {PROJECT_NAME}",
     "category": "3D View",
 }
 
@@ -54,9 +61,9 @@ class COLDER_Properties(bpy.types.PropertyGroup):
     )
     min_num_obs_per_point3d: IntProperty(name="Min Observations / 3D Point", default=esc.MIN_NUM_OBS_PER_POINT3D, min=1)
 
-    generate_rgb: BoolProperty(name="Generate RGB Renders", default=esc.GENERATE_RGB)
     generate_depths: BoolProperty(name="Generate Depth Renders", default=esc.GENERATE_DEPTHS)
     generate_debug_depths: BoolProperty(name="Generate Debug Depth Maps", default=esc.GENERATE_DEBUG_DEPTHS)
+    generate_rgb: BoolProperty(name="Generate RGB Renders", default=esc.GENERATE_RGB)
     depth_occlusion: BoolProperty(
         name="Depthmaps Occlusions",
         default=esc.DEPTH_OCCLUSION,
@@ -99,9 +106,9 @@ def make_export_config(context: bpy.types.Context) -> ExportSceneConfig:
         POINT_3D_DENSITY=context.scene.colder_props.point_3d_density,
         POINT_2D_DENSITY=context.scene.colder_props.point_2d_density,
         MIN_NUM_OBS_PER_POINT3D=context.scene.colder_props.min_num_obs_per_point3d,
-        GENERATE_RGB=context.scene.colder_props.generate_rgb,
         GENERATE_DEPTHS=context.scene.colder_props.generate_depths,
         GENERATE_DEBUG_DEPTHS=context.scene.colder_props.generate_debug_depths,
+        GENERATE_RGB=context.scene.colder_props.generate_rgb,
         DEPTH_OCCLUSION=context.scene.colder_props.depth_occlusion,
         DEPTH_OCCLUSION_THRESH=context.scene.colder_props.depth_occlusion_thresh,
         GENERATE_COLMAP=context.scene.colder_props.generate_colmap,
@@ -274,16 +281,16 @@ class COLDER_PT_panel(bpy.types.Panel):
         layout.prop(props, "export_path")
 
         box = layout.box()
-        box.prop(props, "generate_rgb")
-        if props.generate_rgb:
-            box.operator("colder.render_images")
-            # TODO: add option for rendered point size
-
-        box = layout.box()
         box.prop(props, "generate_depths")
         if props.generate_depths:
             box.prop(props, "generate_debug_depths")
             box.operator("colder.render_depthmaps")
+
+        box = layout.box()
+        box.prop(props, "generate_rgb")
+        if props.generate_rgb:
+            box.operator("colder.render_images")
+            # TODO: add option for rendered point size
 
         box = layout.box()
         box.prop(props, "generate_colmap")

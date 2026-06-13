@@ -13,12 +13,14 @@ import os
 import random
 import re
 import shutil
+import json
 import numpy as np
 from pathlib import Path
 from common import DEPTHS_DIR
 from math import radians
 from mathutils import Vector, Matrix, Quaternion
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass, field, fields
+from typing import Any, Mapping
 from render import prepare_render, render_depth, render_rgb
 from tqdm import tqdm
 
@@ -40,15 +42,36 @@ class ExportSceneConfig:
     POINT_2D_DENSITY: float = 0.2  # fraction of observations to keep, 1 for all
     MIN_NUM_OBS_PER_POINT3D: int = 2
 
-    GENERATE_RGB: bool = True  # whether to generate RGB renders (PNG) for visualization
     GENERATE_DEPTHS: bool = True  # whether to generate depth renders (EXR)
     GENERATE_DEBUG_DEPTHS: bool = True  # generate depth maps in PNG for visualization
+    GENERATE_RGB: bool = True  # whether to generate RGB renders (PNG) for visualization
     DEPTH_OCCLUSION: bool = True  # whether to use depthmaps to filter out occluded points
     DEPTH_OCCLUSION_THRESH: float = 1.0  # how far from the depthmap until a point is considered occluded (in meters)
     GENERATE_COLMAP: bool = True  # whether to generate COLMAP files
 
     # TODO@mateosss: what about the bezier curve part of the name?
     IMAGE_NAME_FMT: str = "cam_{:04d}.png"  # Valid names: used in images/*.png and camera object names
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ExportSceneConfig":
+        config_data = {}
+        for item in fields(cls):
+            if item.name in data:
+                config_data[item.name] = data[item.name]
+            elif item.default is not MISSING:
+                config_data[item.name] = item.default
+            elif item.default_factory is not MISSING:
+                config_data[item.name] = item.default_factory()
+        return cls(**config_data)
+
+    @classmethod
+    def from_json_file(cls, json_path: str | Path) -> "ExportSceneConfig":
+        path = Path(json_path)
+        with path.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+        if not isinstance(data, dict):
+            raise ValueError(f"Expected a JSON object in {path}, got {type(data).__name__}")
+        return cls.from_dict(data)
 
 
 # Fix random seed
@@ -521,13 +544,13 @@ def export_scene(c: ExportSceneConfig):
 
 
 def generate_all(c: ExportSceneConfig):
-    if c.GENERATE_RGB:
-        prepare_render("COLOR", c.TARGET_OBJECTS)
-        render_rgb(c.EXPORT_PATH)
-
     if c.GENERATE_DEPTHS:
         prepare_render("DEPTH", c.TARGET_OBJECTS)
         render_depth(c.EXPORT_PATH, render_dbg=c.GENERATE_DEBUG_DEPTHS)
+
+    if c.GENERATE_RGB:
+        prepare_render("COLOR", c.TARGET_OBJECTS)
+        render_rgb(c.EXPORT_PATH)
 
     if c.GENERATE_COLMAP:
         prob = build_problem(c)

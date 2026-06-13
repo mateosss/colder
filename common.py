@@ -1,34 +1,10 @@
 import os
 import sys
 from contextlib import contextmanager
-import bpy
-import importlib
-from pathlib import Path
+from subprocess import run, PIPE
 
 DEPTHS_DIR = "depths"
 IMAGES_DIR = "images"
-
-
-def ensure_blend_dir_on_syspath():
-    # Directory of the currently saved .blend
-    if not bpy.data.filepath:
-        return None  # unsaved file
-    script_dir = str(Path(bpy.data.filepath).parent)
-    if script_dir not in sys.path:
-        sys.path.append(script_dir)
-    return script_dir
-
-
-def run_module_main(module_name: str):
-    script_dir = ensure_blend_dir_on_syspath()
-    if script_dir is None:
-        raise RuntimeError("Save the .blend file first (needed to locate external scripts).")
-
-    mod = importlib.import_module(module_name)
-    importlib.reload(mod)  # so edits are picked up without restarting Blender
-    if not hasattr(mod, "main"):
-        raise RuntimeError(f"Module '{module_name}.py' has no main()")
-    mod.main()
 
 
 @contextmanager
@@ -52,3 +28,16 @@ def stdout_redirected(to=os.devnull):
             _redirect_stdout(to=old_stdout)  # restore stdout.
             # buffering and flags such as
             # CLOEXEC may be different
+
+
+def sh(command):
+    "Executes command in shell and returns its exit status"
+    return run(command, shell=True, check=False).returncode
+
+
+def shout(command, silence=False):
+    "Executes command in shell and returns its stdout"
+    stdout = run(command, shell=True, stdout=PIPE, check=False).stdout.decode("utf-8")
+    if not silence:
+        print(stdout)
+    return stdout
