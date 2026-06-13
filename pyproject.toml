@@ -1,2 +1,19 @@
+[project]
+name = "COLDER"
+authors = [{ name = "Mateo de Mayo", email = "mateo.demayo@tum.de" }]
+version = "0.1.0"
+description = "Synthetic SfM Dataset Generator in COLMAP format"
+readme = "README.md"
+requires-python = ">=3.13.9"
+dependencies = [
+    "fake-bpy-module>=20260501",
+    "ipdb>=0.13.13",
+    "numpy>=2.4.6",
+    "pillow>=12.2.0",
+    "toml>=0.10.2",
+    "tqdm>=4.68.1",
+    "typer>=0.26.7",
+]
+
 [tool.black]
 line-length = 120
