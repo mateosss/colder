@@ -1,7 +1,7 @@
 import os
 import sys
 from contextlib import contextmanager
-from subprocess import run, PIPE
+from subprocess import Popen, PIPE, STDOUT
 
 DEPTHS_DIR = "depths"
 IMAGES_DIR = "images"
@@ -30,14 +30,32 @@ def stdout_redirected(to=os.devnull):
             # CLOEXEC may be different
 
 
-def sh(command):
+def sh(command, silence=False):
+    if not silence:
+        print(command)
+
+    # We use Popen here instead of subprocess.run to have live stdout
+    cmdrun = Popen(command, shell=True, stdout=PIPE, stderr=STDOUT, text=True)
+
+    output = []
+    for line in cmdrun.stdout:
+        if not silence:
+            print(line, end="")
+        output.append(line)
+    cmdrun.wait()
+
+    stdout = "".join(output)
+    retcode = cmdrun.returncode
+    return stdout, retcode
+
+
+def shret(command, silence=False):
     "Executes command in shell and returns its exit status"
-    return run(command, shell=True, check=False).returncode
+    _, ret = sh(command, silence)
+    return ret
 
 
 def shout(command, silence=False):
     "Executes command in shell and returns its stdout"
-    stdout = run(command, shell=True, stdout=PIPE, check=False).stdout.decode("utf-8")
-    if not silence:
-        print(stdout)
-    return stdout
+    out, _ = sh(command, silence)
+    return out

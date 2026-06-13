@@ -1,38 +1,39 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
-from common import shout
+from common import sh, shret
 from typing import Annotated
-from typer import Typer, Option, Argument, echo, Exit
+from typer import Argument, Exit, Typer, echo
 
-CONFIG_DEFAULT = "empty.json"
+CONFIG_DEFAULT = "data/configs/empty.json"
+REQUIREMENTS_FILE = "requirements.txt"
+
+REPO_ROOT = Path(__file__).resolve().parent
 
 
-def build_command(blender_executable: str, blend_file: Path, config_file: Path) -> list[str]:
-    repo_root = Path(__file__).resolve().parent
-    blender_entrypoint = repo_root / "blender" / "cli_entry.py"
-    return [
-        blender_executable,
-        "-b",
-        str(blend_file),
-        "-P",
-        str(blender_entrypoint),
-        "--",
-        "--config",
-        str(config_file),
-    ]
+def blender_python_executable(blender_executable: str) -> str:
+    out, ret = sh(f'{blender_executable} --background --python-expr "import sys;print(sys.executable)"')
+    if ret != 0:
+        echo("Failed to determine Blender's Python executable.")
+        raise Exit(code=ret)
+
+    lines = [line.strip() for line in out.splitlines() if line.strip()]
+    if not lines:
+        echo("Blender did not report a Python executable.")
+        raise Exit(code=1)
+
+    return lines[0]
 
 
 app = Typer()
 
 
 @app.command()
-def main(
+def generate(
     blend_file: Annotated[Path, Argument(help="Path to the .blend file to open.")],
     config: Annotated[Path, Argument(help="Path to a JSON file with ExportSceneConfig fields.")] = CONFIG_DEFAULT,
-    blender: Annotated[str, Option(help="Blender executable to run.")] = "blender",
+    blender: Annotated[str, Argument(help="Blender executable to run.")] = "blender",
 ) -> None:
-
     if not blend_file.exists():
         echo(f"Blend file not found: {blend_file}")
         raise Exit(code=1)
@@ -41,10 +42,29 @@ def main(
         echo(f"Config file not found: {config}")
         raise Exit(code=1)
 
-    blender_entrypoint = Path(__file__).resolve().parent / "blender" / "cli_entry.py"
-    command = f"{blender} --background {blend_file} --python {blender_entrypoint} -- --config {config}"
-    ret = shout(command)
-    raise Exit(code=ret)
+    blender_entrypoint = REPO_ROOT / "blender" / "cli_entry.py"
+    retcode = shret(f"{blender} --background {blend_file} --python {blender_entrypoint} -- --config {config}")
+
+    raise Exit(code=retcode)
+
+
+@app.command(name="setup_blender")
+def setup_blender(blender: Annotated[str, Argument(help="Blender executable to use.")] = "blender") -> None:
+    requirements = REPO_ROOT / REQUIREMENTS_FILE
+
+    freeze_out, freeze_ret = sh("uv pip freeze")
+    if freeze_ret != 0:
+        raise Exit(code=freeze_ret)
+
+    requirements.write_text(freeze_out, encoding="utf-8")
+
+    blender_python = blender_python_executable(blender)
+    install_ret = shret(f'"{blender_python}" -m pip install -r {requirements}')
+
+    print(f"{requirements=}")
+    print(f"{blender_python=}")
+    print("Done.")
+    raise Exit(code=install_ret)
 
 
 if __name__ == "__main__":

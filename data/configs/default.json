@@ -1,0 +1,11 @@
+{
+  "EXPORT_PATH": "data/inside_walk",
+  "TARGET_OBJECTS": ["Courthouse"],
+  "GENERATE_DEPTHS": true,
+  "GENERATE_DEBUG_DEPTHS": true,
+  "GENERATE_RGB": true,
+  "DEPTH_OCCLUSION": true,
+  "DEPTH_OCCLUSION_THRESH": 4.0,
+  "GENERATE_COLMAP": true,
+  "IMAGE_NAME_FMT": "cam_{:04d}.png"
+}

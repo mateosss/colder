@@ -14,7 +14,6 @@ numpy==2.4.6
 parso==0.8.7
 pexpect==4.9.0
 pillow==12.2.0
-pip==26.1.2
 prompt-toolkit==3.0.52
 psutil==7.2.2
 ptyprocess==0.7.0
@@ -27,5 +26,4 @@ toml==0.10.2
 tqdm==4.68.1
 traitlets==5.15.1
 typer==0.26.7
-uv==0.11.19
 wcwidth==0.8.1

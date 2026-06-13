@@ -2,5 +2,7 @@
 *.blend2
 *.pyc
 .venv
-colmap_export
-data
+data/*
+!data/configs
+!data/configs/default.json
+!data/configs/empty.json
