@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 
+import os
+
 from pathlib import Path
-from common import sh, shret
 from typing import Annotated
 from typer import Argument, Exit, Typer, echo
 
-CONFIG_DEFAULT = "data/configs/empty.json"
+from common import sh, shret
+
+CONFIG_DEFAULT = "configs/empty.json"
 REQUIREMENTS_FILE = "requirements.txt"
 
 REPO_ROOT = Path(__file__).resolve().parent
+
+# A lot of piping from uv to python to blender's python, so let's try keeping colors
+os.environ["FORCE_COLOR"] = "1"
 
 
 def blender_python_executable(blender_executable: str) -> str:

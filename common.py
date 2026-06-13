@@ -34,8 +34,10 @@ def sh(command, silence=False):
     if not silence:
         print(command)
 
-    # We use Popen here instead of subprocess.run to have live stdout
-    cmdrun = Popen(command, shell=True, stdout=PIPE, stderr=STDOUT, text=True)
+    # We use Popen here instead of subprocess.run to have live stdout/err/in but it works weird sometimes
+    cmdrun = Popen(command, shell=True, stdout=PIPE, stderr=STDOUT, text=True) # tqdm has no \r
+    # cmdrun = Popen(command, shell=True, stdout=PIPE, text=True) # ctrl+c stop doesnt work
+    # cmdrun = Popen(command, shell=True, stdout=PIPE, stderr=PIPE, text=True) # no tqdm output
 
     output = []
     for line in cmdrun.stdout:

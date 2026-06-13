@@ -1,0 +1,18 @@
+{
+    "EXPORT_PATH": "data/colmap_export",
+    "TARGET_OBJECTS": [],
+    "POINT_3D_SAVE_NOISE_STDEV": 0.0,
+    "POINT_2D_SAVE_NOISE_STDEV": 0.0,
+    "POSE_TRANSLATION_NOISE_STDEV": 0.0,
+    "POSE_ROTATION_NOISE_STDEV": 0.0,
+    "POINT_3D_DENSITY": 0.2,
+    "POINT_2D_DENSITY": 0.2,
+    "MIN_NUM_OBS_PER_POINT3D": 2,
+    "GENERATE_DEPTHS": true,
+    "GENERATE_DEBUG_DEPTHS": true,
+    "GENERATE_RGB": true,
+    "DEPTH_OCCLUSION": true,
+    "DEPTH_OCCLUSION_THRESH": 4.0,
+    "GENERATE_COLMAP": true,
+    "IMAGE_NAME_FMT": "cam_{:04d}.png"
+}

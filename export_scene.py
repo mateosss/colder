@@ -73,6 +73,17 @@ class ExportSceneConfig:
             raise ValueError(f"Expected a JSON object in {path}, got {type(data).__name__}")
         return cls.from_dict(data)
 
+    def to_dict(self) -> dict[str, Any]:
+        return {item.name: getattr(self, item.name) for item in fields(ExportSceneConfig)}
+
+    def write_json(self, json_path: str | Path | None = None) -> None:
+        if json_path is None:
+            Path(self.EXPORT_PATH).mkdir(exist_ok=True)
+            json_path = Path(self.EXPORT_PATH) / "config.json"
+        path = Path(json_path)
+        with path.open("w", encoding="utf-8") as file:
+            json.dump(self.to_dict(), file, indent=4)
+
 
 # Fix random seed
 random.seed(42)
@@ -544,6 +555,8 @@ def export_scene(c: ExportSceneConfig):
 
 
 def generate_all(c: ExportSceneConfig):
+    c.write_json()
+
     if c.GENERATE_DEPTHS:
         prepare_render("DEPTH", c.TARGET_OBJECTS)
         render_depth(c.EXPORT_PATH, render_dbg=c.GENERATE_DEBUG_DEPTHS)
