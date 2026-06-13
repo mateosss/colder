@@ -37,6 +37,8 @@ class ExportSceneConfig:
     POINT_2D_SAVE_NOISE_STDEV: float = 0.0  # in pixels
     POSE_TRANSLATION_NOISE_STDEV: float = 0.0  # in meters
     POSE_ROTATION_NOISE_STDEV: float = 0.0  # in degrees
+    # TODO@mateosss:
+    # WRONG_MATCHES_FRACTION: float = 0.0  # fraction of observations to randomly assign to a wrong point3D ID, simulating outliers
 
     POINT_3D_DENSITY: float = 0.2  # fraction of vertices to keep, 1 for all
     POINT_2D_DENSITY: float = 0.2  # fraction of observations to keep, 1 for all

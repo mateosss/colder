@@ -1,15 +1,9 @@
 import bpy
-from bpy.props import (
-    StringProperty,
-    BoolProperty,
-    IntProperty,
-    FloatProperty,
-    PointerProperty,
-)
+from bpy.props import StringProperty, BoolProperty, IntProperty, FloatProperty, PointerProperty
 from common import DEPTHS_DIR
 from render import prepare_render, render_rgb, render_depth
 from export_scene import ExportSceneConfig, export_scene, generate_all
-from spawn_cameras import clear_cameras, apply_lookat, spawn_cameras, SpawnCamerasConfig
+from spawn_cameras import clear_cameras, apply_lookat, spawn_cameras, spawn_animation_cameras, SpawnCamerasConfig
 import toml
 
 # Get from pyproject.toml to avoid duplication
@@ -76,6 +70,7 @@ class COLDER_Properties(bpy.types.PropertyGroup):
     generate_colmap: BoolProperty(name="Generate COLMAP Scene", default=True)
 
     # Camera spawn
+    curves_spawn: BoolProperty(name="Spawn from Curves", default=False)
     # defcurves = spc.BEZIER_CURVE_LIST and ",".join(spc.BEZIER_CURVE_LIST) or ""
     defcurves = ""
     bezier_curve_list: StringProperty(name="Curves", description="comma list of names (empty=all)", default=defcurves)
@@ -88,6 +83,10 @@ class COLDER_Properties(bpy.types.PropertyGroup):
     # TODO@mateosss: Of course I want to use a camera collection, remove this option
     use_collection: BoolProperty(name="Use Camera Collection", default=True)
     camera_collection_name: StringProperty(name="Camera Collection Name", default="SpawnedCameras")
+
+    animation_spawn: BoolProperty(name="Spawn from Animation", default=False)
+    animation_camera: StringProperty(name="Animation Camera", default=spc.ANIMATION_CAMERA)
+    animation_step: IntProperty(name="Frame skip", default=spc.ANIMATION_STEP)
 
 
 # ------------------------------------------------------------------------
@@ -124,6 +123,8 @@ def make_camera_spawn_config(context: bpy.types.Context):
         SAMPLES_PER_BEZIER_SEGMENT=context.scene.colder_props.samples_per_bezier_segment,
         USE_COLLECTION=context.scene.colder_props.use_collection,
         CAMERA_COLLECTION_NAME=context.scene.colder_props.camera_collection_name,
+        ANIMATION_CAMERA=context.scene.colder_props.animation_camera,
+        ANIMATION_STEP=context.scene.colder_props.animation_step,
     )
 
 
@@ -139,6 +140,21 @@ class COLDER_OT_spawn_cameras(bpy.types.Operator):
             self.report({"ERROR"}, f"Error spawning cameras: {e}")
             return {"CANCELLED"}
         self.report({"INFO"}, f"Spawned {config.NUMBER_OF_CAMERAS} cameras")
+        return {"FINISHED"}
+
+
+class COLDER_OT_spawn_animation_cameras(bpy.types.Operator):
+    bl_idname = "colder.spawn_animation_cameras"
+    bl_label = "Spawn Cameras from Anim"
+
+    def execute(self, context):
+        try:
+            config = make_camera_spawn_config(context)
+            spawn_animation_cameras(config)
+        except (RuntimeError, ValueError) as e:
+            self.report({"ERROR"}, f"Error spawning anim cameras: {e}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Spawned animation cameras")
         return {"FINISHED"}
 
 
@@ -212,7 +228,8 @@ class COLDER_OT_clear_cameras(bpy.types.Operator):
 
     def execute(self, context):
         try:
-            clear_cameras()
+            config = make_camera_spawn_config(context)
+            clear_cameras(config)
         except (RuntimeError, ValueError) as e:
             self.report({"ERROR"}, f"Error clearing cameras: {e}")
             return {"CANCELLED"}
@@ -251,16 +268,28 @@ class COLDER_PT_panel(bpy.types.Panel):
         props = context.scene.colder_props
 
         layout.label(text="1. Camera Spawn")
-        layout.prop(props, "number_of_cameras")
-        layout.prop(props, "lookup_target")
-        layout.prop(props, "bezier_curve_list")
-        layout.prop(props, "samples_per_bezier_segment")
-        layout.prop(props, "use_collection")
-        if props.use_collection:
-            layout.prop(props, "camera_collection_name")
-        layout.operator("colder.spawn_cameras")
-        layout.operator("colder.clear_cameras")
-        layout.operator("colder.apply_lookat")
+
+        box = layout.box()
+        box.prop(props, "curves_spawn")
+        if props.curves_spawn:
+            box.prop(props, "number_of_cameras")
+            box.prop(props, "lookup_target")
+            box.prop(props, "bezier_curve_list")
+            box.prop(props, "samples_per_bezier_segment")
+            box.prop(props, "use_collection")
+            if props.use_collection:
+                box.prop(props, "camera_collection_name")
+            box.operator("colder.spawn_cameras")
+            box.operator("colder.clear_cameras")
+            box.operator("colder.apply_lookat")
+
+        box = layout.box()
+        box.prop(props, "animation_spawn")
+        if props.animation_spawn:
+            box.prop(props, "animation_camera")
+            box.prop(props, "animation_step")
+            box.operator("colder.spawn_animation_cameras")
+            box.operator("colder.clear_cameras")
 
         layout.separator()
         layout.label(text="2. Export Scene")
@@ -312,6 +341,7 @@ class COLDER_PT_panel(bpy.types.Panel):
 classes = (
     COLDER_Properties,
     COLDER_OT_spawn_cameras,
+    COLDER_OT_spawn_animation_cameras,
     COLDER_OT_export_scene,
     COLDER_OT_generate_all,
     COLDER_OT_clear_cameras,

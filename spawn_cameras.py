@@ -7,7 +7,7 @@
 # - Ensure the curve objects and target object exist in the scene.
 
 import bpy
-from mathutils import Vector
+from mathutils import Vector, Matrix
 from mathutils.geometry import interpolate_bezier  # available in Blender's mathutils
 from dataclasses import dataclass, field
 
@@ -24,6 +24,9 @@ class SpawnCamerasConfig:
     # If True, creates/uses a collection to keep things tidy
     USE_COLLECTION: bool = True
     CAMERA_COLLECTION_NAME: str = "SpawnedCameras"
+
+    ANIMATION_CAMERA: str = "Camera"  # Main camera with animation to use
+    ANIMATION_STEP: int = 10  # How many frames to skip
 
 
 def get_initial_intrinsics(_: int) -> dict:
@@ -225,8 +228,8 @@ def spawn_cameras(c: SpawnCamerasConfig):
             cam_global_index += 1
 
 
-def clear_cameras():
-    cameras = [obj for obj in bpy.data.objects if obj.type == "CAMERA"]
+def clear_cameras(c: SpawnCamerasConfig):
+    cameras = [obj for obj in bpy.data.objects if obj.type == "CAMERA" and obj.name != c.ANIMATION_CAMERA]
     for cam in cameras:
         bpy.data.objects.remove(cam, do_unlink=True)
 
@@ -236,6 +239,185 @@ def apply_lookat():
     for cam in cameras:
         bpy.context.view_layer.objects.active = cam
         bpy.ops.constraint.apply(constraint="Track To", owner="OBJECT")
+
+
+def iter_action_fcurves(action: bpy.types.Action, anim_data: bpy.types.AnimData):
+    """
+    Yield every FCurve in *action* using the Blender 4.4+ layered-action API.
+
+    In Blender 4.4+, FCurves are stored inside:
+        action.layers  →  layer.strips  →  strip.channelbag(slot)  →  .fcurves
+
+    We also try action_slot from anim_data so we get exactly the FCurves
+    bound to this object. If that slot isn't found we fall back to iterating
+    all channelbags on every strip.
+    """
+    slot = anim_data.action_slot if anim_data else None
+
+    for layer in action.layers:
+        for strip in layer.strips:
+            # ── preferred: channelbag for the object's own slot ──────────────
+            if slot is not None:
+                try:
+                    cb = strip.channelbag(slot)
+                    if cb is not None:
+                        yield from cb.fcurves
+                        continue  # move to next strip
+                except Exception:
+                    pass  # slot not in this strip → fall through
+
+            # ── fallback: walk every channelbag on the strip ─────────────────
+            try:
+                for cb in strip.channelbags:
+                    yield from cb.fcurves
+            except AttributeError:
+                pass  # strip has no channelbags at all
+
+
+def get_location_rotation_keyframes(obj: bpy.types.Object) -> list:
+    """
+    Return a sorted, deduplicated list of frame numbers that carry at least one
+    keyframe on a location or rotation channel of *obj*.
+    """
+    anim_data = obj.animation_data
+    action = anim_data.action if (anim_data and anim_data.action) else None
+    if action is None:
+        return []
+
+    RELEVANT = {"location", "rotation_euler", "rotation_quaternion", "scale"}
+    frames: set = set()
+
+    for fcurve in iter_action_fcurves(action, anim_data):
+        if fcurve.data_path in RELEVANT:
+            for kp in fcurve.keyframe_points:
+                frames.add(int(round(kp.co.x)))
+
+    return sorted(frames)
+
+
+def matrix_at_frame(obj: bpy.types.Object, frame: int) -> Matrix:
+    """
+    Return the world-space matrix of *obj* evaluated at *frame*.
+    Evaluating the dependency graph honours constraints and drivers.
+    """
+    bpy.context.scene.frame_set(frame)
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    return obj.evaluated_get(depsgraph).matrix_world.copy()
+
+
+def ensure_collection(name: str) -> bpy.types.Collection:
+    """Return (or create) a top-level scene collection with *name*."""
+    if name in bpy.data.collections:
+        return bpy.data.collections[name]
+    col = bpy.data.collections.new(name)
+    bpy.context.scene.collection.children.link(col)
+    return col
+
+
+def spawn_static_camera(
+    source: bpy.types.Object,
+    frame: int,
+    world_mat: Matrix,
+    collection: bpy.types.Collection,
+    index: int,
+) -> bpy.types.Object:
+    """
+    Create a new camera object at *world_mat*, cloned from *source*,
+    with no animation data, linked into *collection*.
+    """
+    cam_data = source.data.copy()
+    cam_data.name = f"cam_{frame:04d}_DATA"
+
+    new_obj = bpy.data.objects.new(
+        name=f"cam_{frame:04d}",
+        object_data=cam_data,
+    )
+    new_obj.matrix_world = world_mat
+    new_obj.animation_data_clear()
+
+    collection.objects.link(new_obj)
+    return new_obj
+
+
+def create_bezier_path(
+    positions: list,
+    name: str,
+    collection: bpy.types.Collection,
+) -> bpy.types.Object:
+    """
+    Build a 3-D Bezier curve through *positions* with AUTO handles,
+    linked into *collection*.
+    """
+    curve_data = bpy.data.curves.new(name=name, type="CURVE")
+    curve_data.dimensions = "3D"
+    curve_data.resolution_u = 12
+    curve_data.use_path = True
+
+    spline = curve_data.splines.new(type="BEZIER")
+    spline.bezier_points.add(len(positions) - 1)  # first point already exists
+
+    for i, pos in enumerate(positions):
+        bp = spline.bezier_points[i]
+        bp.co = pos
+        bp.handle_left_type = "AUTO"
+        bp.handle_right_type = "AUTO"
+
+    curve_obj = bpy.data.objects.new(name=name, object_data=curve_data)
+    collection.objects.link(curve_obj)
+    return curve_obj
+
+
+def spawn_animation_cameras(c: SpawnCamerasConfig):
+    scene = bpy.context.scene
+
+    # 1 ── Validate source camera ─────────────────────────────────────────────
+    source_cam = bpy.data.objects.get(c.ANIMATION_CAMERA)
+    if source_cam is None:
+        raise ValueError(
+            f"Object '{c.ANIMATION_CAMERA}' not found. " "Update c.ANIMATION_CAMERA at the top of this script."
+        )
+    if source_cam.type != "CAMERA":
+        raise TypeError(f"'{c.ANIMATION_CAMERA}' is type '{source_cam.type}', expected 'CAMERA'.")
+    if not (source_cam.animation_data and source_cam.animation_data.action):
+        raise RuntimeError(f"Camera '{c.ANIMATION_CAMERA}' has no animation action attached.")
+
+    # 2 ── Collect keyframe frames ─────────────────────────────────────────────
+    frames = get_location_rotation_keyframes(source_cam)
+    if not frames:
+        raise RuntimeError(
+            f"No location/rotation keyframes found on '{c.ANIMATION_CAMERA}'.\n"
+            "Make sure the keyframes are on the object (not a constraint target)."
+        )
+    print(f"[spawner] {len(frames)} keyframe(s) found: {frames}")
+
+    # 3 ── Prepare output collection ──────────────────────────────────────────
+    col_name = f"CameraKeyframes_{c.ANIMATION_CAMERA}"
+    col = ensure_collection(col_name)
+
+    original_frame = scene.frame_current
+
+    # 4 ── Spawn static cameras & collect positions ───────────────────────────
+    positions = []
+    for _, frame in enumerate(frames):
+        mat = matrix_at_frame(source_cam, frame)
+        positions.append(mat.translation.copy())
+    for idx, frame in enumerate(frames[:: c.ANIMATION_STEP], start=1):
+        mat = matrix_at_frame(source_cam, frame)
+        cam_obj = spawn_static_camera(source_cam, idx, mat, col, idx)
+        positions.append(mat.translation.copy())
+        print(f"  frame {frame:5d}  →  {cam_obj.name}  loc={mat.translation}")
+
+    scene.frame_set(original_frame)
+
+    # 5 ── Create Bezier path ─────────────────────────────────────────────────
+    path_name = f"{c.ANIMATION_CAMERA}_Path"
+    path_obj = create_bezier_path(positions, path_name, col)
+
+    print(
+        f"\n[spawner] Done.\n"
+        f"  {len(frames)} camera copies  →  collection '{col_name}'\n"
+        f"  Bezier path '{path_name}'  ({len(positions)} control points)"
+    )
 
 
 def main():
