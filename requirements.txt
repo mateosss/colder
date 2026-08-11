@@ -14,7 +14,7 @@ mdurl==0.1.2
 numpy==2.4.6
 parso==0.8.7
 pexpect==4.9.0
-pillow==12.2.0
+pillow==12.3.0
 prompt-toolkit==3.0.52
 psutil==7.2.2
 ptipython==1.0.1
